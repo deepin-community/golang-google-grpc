@@ -1,4 +1,38 @@
 #!/usr/bin/make -f
 
+export DH_GOLANG_EXCLUDES := \
+  benchmark \
+  credentials/tls/certprovider/meshca \
+  examples \
+  interop/alts \
+  interop \
+  profiling \
+  security/advancedtls \
+  security/authorization \
+  stress \
+  test/go_vet \
+  test/tools \
+  xds
+
+export DH_GOLANG_INSTALL_EXTRA := regenerate.sh debian/missing-sources
+
+export PATH := $(PATH):$(CURDIR)/_build/bin
+
+SRC_DIR :=  $(CURDIR)/_build/src/google.golang.org/grpc
+
 %:
-	dh $@
+	dh $@ --buildsystem=golang --builddirectory=_build
+
+# use override_dh_auto_configure instead of execute_after_dh_auto_configure to
+# allow dh_golang_autopkgtest to rewrite.
+override_dh_auto_configure:
+	dh_auto_configure
+	DH_GOLANG_BUILDPKG=google.golang.org/grpc/cmd/protoc-gen-go-grpc dh_auto_build
+	find $(SRC_DIR) -not -path '*/reflection/grpc_testingv3/*' -type f -name '*.pb.go'\
+		 -delete -printf 'removed %p\n'
+	cd $(SRC_DIR) && ./regenerate.sh
+
+override_dh_auto_test:
+	# internal/resolver/dns test is unreliable.
+	DH_GOLANG_EXCLUDES="$(DH_GOLANG_EXCLUDES) internal/resolver/dns" \
+	dh_auto_test -- -short
