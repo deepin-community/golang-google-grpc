@@ -1,0 +1,21 @@
+  This package is very sensitive. It must be in sync with
+  "golang-goprotobuf-dev".
+  Failure to re-build generated files in this package lead to FTBFS in
+  dozens of packages.
+
+ -- Dmitry Smirnov <onlyjob@debian.org>  Thu, 09 Apr 2020 16:36:37 +1000
+
+
+There's a circular dependency in this package, it has
+golang-google-genproto-dev in Build-Depends, which depends this package
+as well.
+
+To break this, we vendor the original protobuf definitions for rpc
+functionality, from the following repos and commits:
+
+ https://github.com/grpc/grpc-proto/tree/master/grpc at commit da219ab.
+ https://github.com/googleapis/googleapis/tree/master/google/rpc at commit
+ ae909b8.
+
+
+ -- Shengjing Zhu <i@zhsj.me>  Wed, 13 Sep 2017 00:29:14 +0800
