@@ -29,23 +29,33 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/credentials/local"
+	"google.golang.org/grpc/internal/stubserver"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
-	testpb "google.golang.org/grpc/test/grpc_testing"
+	testgrpc "google.golang.org/grpc/interop/grpc_testing"
+	testpb "google.golang.org/grpc/interop/grpc_testing"
 )
 
 func testLocalCredsE2ESucceed(network, address string) error {
-	ss := &stubServer{
-		emptyCall: func(ctx context.Context, in *testpb.Empty) (*testpb.Empty, error) {
+	ss := &stubserver.StubServer{
+		EmptyCallF: func(ctx context.Context, in *testpb.Empty) (*testpb.Empty, error) {
 			pr, ok := peer.FromContext(ctx)
 			if !ok {
 				return nil, status.Error(codes.DataLoss, "Failed to get peer from ctx")
 			}
+			type internalInfo interface {
+				GetCommonAuthInfo() credentials.CommonAuthInfo
+			}
+			var secLevel credentials.SecurityLevel
+			if info, ok := (pr.AuthInfo).(internalInfo); ok {
+				secLevel = info.GetCommonAuthInfo().SecurityLevel
+			} else {
+				return nil, status.Errorf(codes.Unauthenticated, "peer.AuthInfo does not implement GetCommonAuthInfo()")
+			}
 			// Check security level
-			info := pr.AuthInfo.(local.Info)
-			secLevel := info.CommonAuthInfo.SecurityLevel
 			switch network {
 			case "unix":
 				if secLevel != credentials.PrivacyAndIntegrity {
@@ -64,7 +74,7 @@ func testLocalCredsE2ESucceed(network, address string) error {
 	s := grpc.NewServer(sopts...)
 	defer s.Stop()
 
-	testpb.RegisterTestServiceServer(s, ss)
+	testgrpc.RegisterTestServiceServer(s, ss)
 
 	lis, err := net.Listen(network, address)
 	if err != nil {
@@ -83,7 +93,7 @@ func testLocalCredsE2ESucceed(network, address string) error {
 				return net.Dial("unix", addr)
 			}))
 	case "tcp":
-		cc, err = grpc.Dial(lisAddr, grpc.WithTransportCredentials(local.NewCredentials()))
+		cc, err = grpc.NewClient(lisAddr, grpc.WithTransportCredentials(local.NewCredentials()))
 	default:
 		return fmt.Errorf("unsupported network %q", network)
 	}
@@ -92,8 +102,8 @@ func testLocalCredsE2ESucceed(network, address string) error {
 	}
 	defer cc.Close()
 
-	c := testpb.NewTestServiceClient(cc)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	c := testgrpc.NewTestServiceClient(cc)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
 	defer cancel()
 
 	if _, err = c.EmptyCall(ctx, &testpb.Empty{}); err != nil {
@@ -152,8 +162,8 @@ func spoofDialer(addr net.Addr) func(target string, t time.Duration) (net.Conn, 
 }
 
 func testLocalCredsE2EFail(dopts []grpc.DialOption) error {
-	ss := &stubServer{
-		emptyCall: func(context.Context, *testpb.Empty) (*testpb.Empty, error) {
+	ss := &stubserver.StubServer{
+		EmptyCallF: func(context.Context, *testpb.Empty) (*testpb.Empty, error) {
 			return &testpb.Empty{}, nil
 		},
 	}
@@ -162,7 +172,7 @@ func testLocalCredsE2EFail(dopts []grpc.DialOption) error {
 	s := grpc.NewServer(sopts...)
 	defer s.Stop()
 
-	testpb.RegisterTestServiceServer(s, ss)
+	testgrpc.RegisterTestServiceServer(s, ss)
 
 	lis, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
@@ -181,14 +191,14 @@ func testLocalCredsE2EFail(dopts []grpc.DialOption) error {
 
 	go s.Serve(spoofListener(lis, fakeClientAddr))
 
-	cc, err := grpc.Dial(lis.Addr().String(), append(dopts, grpc.WithDialer(spoofDialer(fakeServerAddr)))...)
+	cc, err := grpc.NewClient(lis.Addr().String(), append(dopts, grpc.WithDialer(spoofDialer(fakeServerAddr)))...)
 	if err != nil {
 		return fmt.Errorf("Failed to dial server: %v, %v", err, lis.Addr().String())
 	}
 	defer cc.Close()
 
-	c := testpb.NewTestServiceClient(cc)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	c := testgrpc.NewTestServiceClient(cc)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
 	defer cancel()
 
 	_, err = c.EmptyCall(ctx, &testpb.Empty{})
@@ -210,7 +220,7 @@ func (s) TestLocalCredsClientFail(t *testing.T) {
 
 func (s) TestLocalCredsServerFail(t *testing.T) {
 	// Use insecure at client-side which should lead to server-side failure.
-	opts := []grpc.DialOption{grpc.WithInsecure()}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
 	if err := testLocalCredsE2EFail(opts); status.Code(err) != codes.Unavailable {
 		t.Fatalf("testLocalCredsE2EFail() = %v; want %v", err, codes.Unavailable)
 	}

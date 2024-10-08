@@ -1,4 +1,4 @@
 version=4
 opts="mode=git, pgpmode=none" \
   https://github.com/grpc/grpc-go \
-  refs/tags/v?@ANY_VERSION@ debian
+  refs/tags/v?(\d[\d\.]*) debian

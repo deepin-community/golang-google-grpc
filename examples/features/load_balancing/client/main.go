@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	ecpb "google.golang.org/grpc/examples/features/proto/echo"
 	"google.golang.org/grpc/resolver"
 )
@@ -55,11 +56,10 @@ func makeRPCs(cc *grpc.ClientConn, n int) {
 }
 
 func main() {
-	// "pick_first" is the default, so there's no need to set the load balancer.
-	pickfirstConn, err := grpc.Dial(
+	// "pick_first" is the default, so there's no need to set the load balancing policy.
+	pickfirstConn, err := grpc.NewClient(
 		fmt.Sprintf("%s:///%s", exampleScheme, exampleServiceName),
-		grpc.WithInsecure(),
-		grpc.WithBlock(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
@@ -72,11 +72,10 @@ func main() {
 	fmt.Println()
 
 	// Make another ClientConn with round_robin policy.
-	roundrobinConn, err := grpc.Dial(
+	roundrobinConn, err := grpc.NewClient(
 		fmt.Sprintf("%s:///%s", exampleScheme, exampleServiceName),
-		grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`), // This sets the initial balancing policy.
-		grpc.WithInsecure(),
-		grpc.WithBlock(),
+		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig": [{"round_robin":{}}]}`), // This sets the initial balancing policy.
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
@@ -112,7 +111,7 @@ type exampleResolver struct {
 }
 
 func (r *exampleResolver) start() {
-	addrStrs := r.addrsStore[r.target.Endpoint]
+	addrStrs := r.addrsStore[r.target.Endpoint()]
 	addrs := make([]resolver.Address, len(addrStrs))
 	for i, s := range addrStrs {
 		addrs[i] = resolver.Address{Addr: s}

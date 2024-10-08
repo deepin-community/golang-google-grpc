@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	pb "google.golang.org/grpc/examples/features/proto/echo"
 	_ "google.golang.org/grpc/health"
 	"google.golang.org/grpc/resolver"
@@ -65,15 +66,15 @@ func main() {
 	address := fmt.Sprintf("%s:///unused", r.Scheme())
 
 	options := []grpc.DialOption{
-		grpc.WithInsecure(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
 		grpc.WithResolvers(r),
 		grpc.WithDefaultServiceConfig(serviceConfig),
 	}
 
-	conn, err := grpc.Dial(address, options...)
+	conn, err := grpc.NewClient(address, options...)
 	if err != nil {
-		log.Fatalf("did not connect %v", err)
+		log.Fatalf("grpc.NewClient(%q): %v", address, err)
 	}
 	defer conn.Close()
 

@@ -21,149 +21,47 @@ package fakeclient
 
 import (
 	"context"
-	"sync"
 
 	"google.golang.org/grpc/internal/testutils"
-	xdsclient "google.golang.org/grpc/xds/internal/client"
-	"google.golang.org/grpc/xds/internal/client/load"
+	"google.golang.org/grpc/internal/xds/bootstrap"
+	"google.golang.org/grpc/xds/internal/xdsclient"
+	"google.golang.org/grpc/xds/internal/xdsclient/load"
 )
 
 // Client is a fake implementation of an xds client. It exposes a bunch of
 // channels to signal the occurrence of various events.
 type Client struct {
+	// Embed XDSClient so this fake client implements the interface, but it's
+	// never set (it's always nil). This may cause nil panic since not all the
+	// methods are implemented.
+	xdsclient.XDSClient
+
 	name         string
-	suWatchCh    *testutils.Channel
-	cdsWatchCh   *testutils.Channel
-	edsWatchCh   *testutils.Channel
-	suCancelCh   *testutils.Channel
-	cdsCancelCh  *testutils.Channel
-	edsCancelCh  *testutils.Channel
 	loadReportCh *testutils.Channel
-	closeCh      *testutils.Channel
+	lrsCancelCh  *testutils.Channel
 	loadStore    *load.Store
-
-	mu        sync.Mutex
-	serviceCb func(xdsclient.ServiceUpdate, error)
-	cdsCb     func(xdsclient.ClusterUpdate, error)
-	edsCb     func(xdsclient.EndpointsUpdate, error)
-}
-
-// WatchService registers a LDS/RDS watch.
-func (xdsC *Client) WatchService(target string, callback func(xdsclient.ServiceUpdate, error)) func() {
-	xdsC.mu.Lock()
-	defer xdsC.mu.Unlock()
-
-	xdsC.serviceCb = callback
-	xdsC.suWatchCh.Send(target)
-	return func() {
-		xdsC.suCancelCh.Send(nil)
-	}
-}
-
-// WaitForWatchService waits for WatchService to be invoked on this client and
-// returns the serviceName being watched.
-func (xdsC *Client) WaitForWatchService(ctx context.Context) (string, error) {
-	val, err := xdsC.suWatchCh.Receive(ctx)
-	if err != nil {
-		return "", err
-	}
-	return val.(string), err
-}
-
-// InvokeWatchServiceCallback invokes the registered service watch callback.
-func (xdsC *Client) InvokeWatchServiceCallback(u xdsclient.ServiceUpdate, err error) {
-	xdsC.mu.Lock()
-	defer xdsC.mu.Unlock()
-
-	xdsC.serviceCb(u, err)
-}
-
-// WatchCluster registers a CDS watch.
-func (xdsC *Client) WatchCluster(clusterName string, callback func(xdsclient.ClusterUpdate, error)) func() {
-	xdsC.mu.Lock()
-	defer xdsC.mu.Unlock()
-
-	xdsC.cdsCb = callback
-	xdsC.cdsWatchCh.Send(clusterName)
-	return func() {
-		xdsC.cdsCancelCh.Send(nil)
-	}
-}
-
-// WaitForWatchCluster waits for WatchCluster to be invoked on this client and
-// returns the clusterName being watched.
-func (xdsC *Client) WaitForWatchCluster(ctx context.Context) (string, error) {
-	val, err := xdsC.cdsWatchCh.Receive(ctx)
-	if err != nil {
-		return "", err
-	}
-	return val.(string), err
-}
-
-// InvokeWatchClusterCallback invokes the registered cdsWatch callback.
-func (xdsC *Client) InvokeWatchClusterCallback(update xdsclient.ClusterUpdate, err error) {
-	xdsC.mu.Lock()
-	defer xdsC.mu.Unlock()
-
-	xdsC.cdsCb(update, err)
-}
-
-// WaitForCancelClusterWatch waits for a CDS watch to be cancelled  and returns
-// context.DeadlineExceeded otherwise.
-func (xdsC *Client) WaitForCancelClusterWatch(ctx context.Context) error {
-	_, err := xdsC.cdsCancelCh.Receive(ctx)
-	return err
-}
-
-// WatchEndpoints registers an EDS watch for provided clusterName.
-func (xdsC *Client) WatchEndpoints(clusterName string, callback func(xdsclient.EndpointsUpdate, error)) (cancel func()) {
-	xdsC.mu.Lock()
-	defer xdsC.mu.Unlock()
-
-	xdsC.edsCb = callback
-	xdsC.edsWatchCh.Send(clusterName)
-	return func() {
-		xdsC.edsCancelCh.Send(nil)
-	}
-}
-
-// WaitForWatchEDS waits for WatchEndpoints to be invoked on this client and
-// returns the clusterName being watched.
-func (xdsC *Client) WaitForWatchEDS(ctx context.Context) (string, error) {
-	val, err := xdsC.edsWatchCh.Receive(ctx)
-	if err != nil {
-		return "", err
-	}
-	return val.(string), err
-}
-
-// InvokeWatchEDSCallback invokes the registered edsWatch callback.
-func (xdsC *Client) InvokeWatchEDSCallback(update xdsclient.EndpointsUpdate, err error) {
-	xdsC.mu.Lock()
-	defer xdsC.mu.Unlock()
-
-	xdsC.edsCb(update, err)
-}
-
-// WaitForCancelEDSWatch waits for a EDS watch to be cancelled and returns
-// context.DeadlineExceeded otherwise.
-func (xdsC *Client) WaitForCancelEDSWatch(ctx context.Context) error {
-	_, err := xdsC.edsCancelCh.Receive(ctx)
-	return err
+	bootstrapCfg *bootstrap.Config
 }
 
 // ReportLoadArgs wraps the arguments passed to ReportLoad.
 type ReportLoadArgs struct {
 	// Server is the name of the server to which the load is reported.
-	Server string
-	// Cluster is the name of the cluster for which load is reported.
-	Cluster string
+	Server *bootstrap.ServerConfig
 }
 
 // ReportLoad starts reporting load about clusterName to server.
-func (xdsC *Client) ReportLoad(server string, clusterName string) (cancel func()) {
-	xdsC.loadReportCh.Send(ReportLoadArgs{Server: server, Cluster: clusterName})
-	return func() {}
+func (xdsC *Client) ReportLoad(server *bootstrap.ServerConfig) (loadStore *load.Store, cancel func()) {
+	xdsC.loadReportCh.Send(ReportLoadArgs{Server: server})
+	return xdsC.loadStore, func() {
+		xdsC.lrsCancelCh.Send(nil)
+	}
+}
+
+// WaitForCancelReportLoad waits for a load report to be cancelled and returns
+// context.DeadlineExceeded otherwise.
+func (xdsC *Client) WaitForCancelReportLoad(ctx context.Context) error {
+	_, err := xdsC.lrsCancelCh.Receive(ctx)
+	return err
 }
 
 // LoadStore returns the underlying load data store.
@@ -175,19 +73,20 @@ func (xdsC *Client) LoadStore() *load.Store {
 // returns the arguments passed to it.
 func (xdsC *Client) WaitForReportLoad(ctx context.Context) (ReportLoadArgs, error) {
 	val, err := xdsC.loadReportCh.Receive(ctx)
-	return val.(ReportLoadArgs), err
+	if err != nil {
+		return ReportLoadArgs{}, err
+	}
+	return val.(ReportLoadArgs), nil
 }
 
-// Close closes the xds client.
-func (xdsC *Client) Close() {
-	xdsC.closeCh.Send(nil)
+// BootstrapConfig returns the bootstrap config.
+func (xdsC *Client) BootstrapConfig() *bootstrap.Config {
+	return xdsC.bootstrapCfg
 }
 
-// WaitForClose waits for Close to be invoked on this client and returns
-// context.DeadlineExceeded otherwise.
-func (xdsC *Client) WaitForClose(ctx context.Context) error {
-	_, err := xdsC.closeCh.Receive(ctx)
-	return err
+// SetBootstrapConfig updates the bootstrap config.
+func (xdsC *Client) SetBootstrapConfig(cfg *bootstrap.Config) {
+	xdsC.bootstrapCfg = cfg
 }
 
 // Name returns the name of the xds client.
@@ -206,14 +105,9 @@ func NewClient() *Client {
 func NewClientWithName(name string) *Client {
 	return &Client{
 		name:         name,
-		suWatchCh:    testutils.NewChannel(),
-		cdsWatchCh:   testutils.NewChannel(),
-		edsWatchCh:   testutils.NewChannel(),
-		suCancelCh:   testutils.NewChannel(),
-		cdsCancelCh:  testutils.NewChannel(),
-		edsCancelCh:  testutils.NewChannel(),
 		loadReportCh: testutils.NewChannel(),
-		closeCh:      testutils.NewChannel(),
+		lrsCancelCh:  testutils.NewChannel(),
 		loadStore:    load.NewStore(),
+		bootstrapCfg: &bootstrap.Config{ClientDefaultListenerResourceNameTemplate: "%s"},
 	}
 }

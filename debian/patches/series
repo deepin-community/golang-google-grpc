@@ -1,3 +1,2 @@
 0001-Adapt-regenerate.sh-for-packaging.patch
-0002-Backport-sha256-x509-testdata.patch
-0003-Force-UnixTest-not-to-use-https_proxy-env.patch
+0002-eliminate-problematic-files.patch

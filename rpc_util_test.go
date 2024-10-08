@@ -26,7 +26,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/encoding"
 	protoenc "google.golang.org/grpc/encoding/proto"
@@ -34,6 +33,7 @@ import (
 	"google.golang.org/grpc/internal/transport"
 	"google.golang.org/grpc/status"
 	perfpb "google.golang.org/grpc/test/codec_perf"
+	"google.golang.org/protobuf/proto"
 )
 
 type fullReader struct {
@@ -65,7 +65,7 @@ func (s) TestSimpleParsing(t *testing.T) {
 		{append([]byte{0, 1, 0, 0, 0}, bigMsg...), nil, bigMsg, compressionNone},
 	} {
 		buf := fullReader{bytes.NewReader(test.p)}
-		parser := &parser{r: buf}
+		parser := &parser{r: buf, recvBufferPool: nopBufferPool{}}
 		pt, b, err := parser.recvMsg(math.MaxInt32)
 		if err != test.err || !bytes.Equal(b, test.b) || pt != test.pt {
 			t.Fatalf("parser{%v}.recvMsg(_) = %v, %v, %v\nwant %v, %v, %v", test.p, pt, b, err, test.pt, test.b, test.err)
@@ -77,7 +77,7 @@ func (s) TestMultipleParsing(t *testing.T) {
 	// Set a byte stream consists of 3 messages with their headers.
 	p := []byte{0, 0, 0, 0, 1, 'a', 0, 0, 0, 0, 2, 'b', 'c', 0, 0, 0, 0, 1, 'd'}
 	b := fullReader{bytes.NewReader(p)}
-	parser := &parser{r: b}
+	parser := &parser{r: b, recvBufferPool: nopBufferPool{}}
 
 	wantRecvs := []struct {
 		pt   payloadFormat
@@ -187,27 +187,6 @@ func (s) TestToRPCErr(t *testing.T) {
 		}
 		if !testutils.StatusErrEqual(err, test.errOut) {
 			t.Errorf("toRPCErr{%v} = %v \nwant %v", test.errIn, err, test.errOut)
-		}
-	}
-}
-
-func (s) TestParseDialTarget(t *testing.T) {
-	for _, test := range []struct {
-		target, wantNet, wantAddr string
-	}{
-		{"unix:etcd:0", "unix", "etcd:0"},
-		{"unix:///tmp/unix-3", "unix", "/tmp/unix-3"},
-		{"unix://domain", "unix", "domain"},
-		{"unix://etcd:0", "unix", "etcd:0"},
-		{"unix:///etcd:0", "unix", "/etcd:0"},
-		{"passthrough://unix://domain", "tcp", "passthrough://unix://domain"},
-		{"https://google.com:443", "tcp", "https://google.com:443"},
-		{"dns:///google.com", "tcp", "dns:///google.com"},
-		{"/unix/socket/address", "tcp", "/unix/socket/address"},
-	} {
-		gotNet, gotAddr := parseDialTarget(test.target)
-		if gotNet != test.wantNet || gotAddr != test.wantAddr {
-			t.Errorf("parseDialTarget(%q) = %s, %s want %s, %s", test.target, gotNet, gotAddr, test.wantNet, test.wantAddr)
 		}
 	}
 }

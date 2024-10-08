@@ -1,0 +1,2 @@
+package-contains-documentation-outside-usr-share-doc [usr/share/gocode/src/google.golang.org/grpc/testdata/x509/README.md]
+package-contains-documentation-outside-usr-share-doc [usr/share/gocode/src/google.golang.org/grpc/testdata/README.md]

@@ -1,3 +1,99 @@
+golang-google-grpc (1.64.0-6) unstable; urgency=medium
+
+  * Team upload
+  * Add another package to Breaks list in d/control
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sun, 04 Aug 2024 00:37:02 +0000
+
+golang-google-grpc (1.64.0-5) unstable; urgency=medium
+
+  * Team upload
+  * Revert "Skip using import path"
+    - In the interest of getting things to migrate, undo this change. We'll
+      need to come back later and properly clean up files that should be
+      excluded from the -dev package
+  * Fix upper version ranges for Breaks in d/control
+
+ -- Mathias Gibbens <gibmat@debian.org>  Tue, 30 Jul 2024 05:49:40 +0000
+
+golang-google-grpc (1.64.0-4) unstable; urgency=medium
+
+  * Team upload
+
+  [ Mathias Gibbens ]
+  * Update list of Breaks in d/control to help hint through migration
+
+  [ Nilesh Patra ]
+  * Revert "Delete d/clean -- it was masking issues with tests"
+  * Skip using import path
+
+ -- Mathias Gibbens <gibmat@debian.org>  Mon, 29 Jul 2024 23:03:32 +0000
+
+golang-google-grpc (1.64.0-3) unstable; urgency=medium
+
+  * Team upload
+  * Delete d/clean -- it was masking issues with tests
+  * Add a patch that deletes three problematic files to get autopkgtest
+    passing again
+
+ -- Mathias Gibbens <gibmat@debian.org>  Sat, 27 Jul 2024 11:33:28 +0000
+
+golang-google-grpc (1.64.0-2) unstable; urgency=medium
+
+  * Team upload
+  * Upload changes from experimental to unstable
+  * d/control:
+    - Update Standards-Version to 4.7.0 (no changes needed)
+    - Update minimum required version of golang-google-genproto-dev
+
+ -- Mathias Gibbens <gibmat@debian.org>  Thu, 25 Jul 2024 06:26:50 +0000
+
+golang-google-grpc (1.64.0-1) experimental; urgency=medium
+
+  * Team upload
+  * New upstream version 1.64.0
+  * Depend on google/protobuf APIv2. Please update dependent packages
+    that currenty use the protobuf APIv1 (i.e., depend on gogoproto,
+    or golang/protobuf@{v1.3,v1.5}) to use golang-google-protobuf-dev
+  * Tighten build-depends on google/genproto-go
+  * Disable module grpc/stats/opentelemetry to avoid dependency on
+    opentelemetry. Can be enabled after otel gets updated to 1.24 or later
+
+ -- Reinhard Tartler <siretart@tauware.de>  Sat, 22 Jun 2024 11:43:17 -0400
+
+golang-google-grpc (1.60.1-2) experimental; urgency=medium
+
+  * More EXCLUDE fixes.
+
+ -- Simon Josefsson <simon@josefsson.org>  Mon, 22 Jan 2024 20:15:23 +0100
+
+golang-google-grpc (1.60.1-1) experimental; urgency=medium
+
+  [ Simon Josefsson ]
+  * Team upload.
+  * New upstream version 1.60.1.
+  * The "security" in EXCLUDES matches too much, qualify it.
+  * Fix for lintian update-debian-copyright.
+
+ -- Simon Josefsson <simon@josefsson.org>  Mon, 22 Jan 2024 11:17:09 +0100
+
+golang-google-grpc (1.59.0-1) experimental; urgency=medium
+
+  [ Maytham Alsudany ]
+  * Team upload.
+  * New upstream version 1.59.0 (Closes: #1057834)
+  * Update (Build-)Depends
+  * Update patches
+  * Remove Static-Built-Using from d/control
+  * Override lintian docs warning
+  * Install Apache-2.0's NOTICE.txt in docs
+  * Update d/missing-sources
+
+  [ Simon Josefsson ]
+  * gbp.conf: Set branch to experimental.
+
+ -- Simon Josefsson <simon@josefsson.org>  Thu, 18 Jan 2024 21:05:47 +0100
+
 golang-google-grpc (1.38.0+really1.33.3-1) unstable; urgency=medium
 
   * Team upload

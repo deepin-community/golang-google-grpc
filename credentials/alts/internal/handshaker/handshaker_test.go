@@ -21,13 +21,18 @@ package handshaker
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	grpc "google.golang.org/grpc"
 	core "google.golang.org/grpc/credentials/alts/internal"
 	altspb "google.golang.org/grpc/credentials/alts/internal/proto/grpc_gcp"
 	"google.golang.org/grpc/credentials/alts/internal/testutil"
+	"google.golang.org/grpc/internal/envconfig"
 	"google.golang.org/grpc/internal/grpctest"
 )
 
@@ -56,6 +61,8 @@ var (
 	}
 )
 
+const defaultTestTimeout = 10 * time.Second
+
 // testRPCStream mimics a altspb.HandshakerService_DoHandshakeClient object.
 type testRPCStream struct {
 	grpc.ClientStream
@@ -68,6 +75,9 @@ type testRPCStream struct {
 	first bool
 	// useful for testing concurrent calls.
 	delay time.Duration
+	// The minimum expected value of the network_latency_ms field in a
+	// NextHandshakeMessageReq.
+	minExpectedNetworkLatency time.Duration
 }
 
 func (t *testRPCStream) Recv() (*altspb.HandshakerResp, error) {
@@ -96,6 +106,17 @@ func (t *testRPCStream) Send(req *altspb.HandshakerReq) error {
 			}
 		}
 	} else {
+		switch req := req.ReqOneof.(type) {
+		case *altspb.HandshakerReq_Next:
+			// Compare the network_latency_ms field to the minimum expected network
+			// latency.
+			if nl := time.Duration(req.Next.NetworkLatencyMs) * time.Millisecond; nl < t.minExpectedNetworkLatency {
+				return fmt.Errorf("networkLatency (%v) is smaller than expected min network latency (%v)", nl, t.minExpectedNetworkLatency)
+			}
+		default:
+			return fmt.Errorf("handshake request has unexpected type: %v", req)
+		}
+
 		// Add delay to test concurrent calls.
 		cleanup := stat.Update()
 		defer cleanup()
@@ -127,16 +148,23 @@ func (s) TestClientHandshake(t *testing.T) {
 	for _, testCase := range []struct {
 		delay              time.Duration
 		numberOfHandshakes int
+		readLatency        time.Duration
 	}{
-		{0 * time.Millisecond, 1},
-		{100 * time.Millisecond, 10 * maxPendingHandshakes},
+		{0 * time.Millisecond, 1, time.Duration(0)},
+		{0 * time.Millisecond, 1, 2 * time.Millisecond},
+		{100 * time.Millisecond, 10 * int(envconfig.ALTSMaxConcurrentHandshakes), time.Duration(0)},
 	} {
 		errc := make(chan error)
 		stat.Reset()
+
+		ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+		defer cancel()
+
 		for i := 0; i < testCase.numberOfHandshakes; i++ {
 			stream := &testRPCStream{
-				t:        t,
-				isClient: true,
+				t:                         t,
+				isClient:                  true,
+				minExpectedNetworkLatency: testCase.readLatency,
 			}
 			// Preload the inbound frames.
 			f1 := testutil.MakeFrame("ServerInit")
@@ -144,7 +172,7 @@ func (s) TestClientHandshake(t *testing.T) {
 			in := bytes.NewBuffer(f1)
 			in.Write(f2)
 			out := new(bytes.Buffer)
-			tc := testutil.NewTestConn(in, out)
+			tc := testutil.NewTestConnWithReadLatency(in, out, testCase.readLatency)
 			chs := &altsHandshaker{
 				stream: stream,
 				conn:   tc,
@@ -155,25 +183,26 @@ func (s) TestClientHandshake(t *testing.T) {
 				side: core.ClientSide,
 			}
 			go func() {
-				_, context, err := chs.ClientHandshake(context.Background())
+				_, context, err := chs.ClientHandshake(ctx)
 				if err == nil && context == nil {
-					panic("expected non-nil ALTS context")
+					errc <- errors.New("expected non-nil ALTS context")
+					return
 				}
 				errc <- err
 				chs.Close()
 			}()
 		}
 
-		// Ensure all errors are expected.
+		// Ensure that there are no errors.
 		for i := 0; i < testCase.numberOfHandshakes; i++ {
-			if err := <-errc; err != nil && err != errDropped {
-				t.Errorf("ClientHandshake() = _, %v, want _, <nil> or %v", err, errDropped)
+			if err := <-errc; err != nil {
+				t.Errorf("ClientHandshake() = _, %v, want _, <nil>", err)
 			}
 		}
 
 		// Ensure that there are no concurrent calls more than the limit.
-		if stat.MaxConcurrentCalls > maxPendingHandshakes {
-			t.Errorf("Observed %d concurrent handshakes; want <= %d", stat.MaxConcurrentCalls, maxPendingHandshakes)
+		if stat.MaxConcurrentCalls > int(envconfig.ALTSMaxConcurrentHandshakes) {
+			t.Errorf("Observed %d concurrent handshakes; want <= %d", stat.MaxConcurrentCalls, envconfig.ALTSMaxConcurrentHandshakes)
 		}
 	}
 }
@@ -184,10 +213,14 @@ func (s) TestServerHandshake(t *testing.T) {
 		numberOfHandshakes int
 	}{
 		{0 * time.Millisecond, 1},
-		{100 * time.Millisecond, 10 * maxPendingHandshakes},
+		{100 * time.Millisecond, 10 * int(envconfig.ALTSMaxConcurrentHandshakes)},
 	} {
 		errc := make(chan error)
 		stat.Reset()
+
+		ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+		defer cancel()
+
 		for i := 0; i < testCase.numberOfHandshakes; i++ {
 			stream := &testRPCStream{
 				t:        t,
@@ -207,25 +240,26 @@ func (s) TestServerHandshake(t *testing.T) {
 				side:       core.ServerSide,
 			}
 			go func() {
-				_, context, err := shs.ServerHandshake(context.Background())
+				_, context, err := shs.ServerHandshake(ctx)
 				if err == nil && context == nil {
-					panic("expected non-nil ALTS context")
+					errc <- errors.New("expected non-nil ALTS context")
+					return
 				}
 				errc <- err
 				shs.Close()
 			}()
 		}
 
-		// Ensure all errors are expected.
+		// Ensure that there are no errors.
 		for i := 0; i < testCase.numberOfHandshakes; i++ {
-			if err := <-errc; err != nil && err != errDropped {
-				t.Errorf("ServerHandshake() = _, %v, want _, <nil> or %v", err, errDropped)
+			if err := <-errc; err != nil {
+				t.Errorf("ServerHandshake() = _, %v, want _, <nil>", err)
 			}
 		}
 
 		// Ensure that there are no concurrent calls more than the limit.
-		if stat.MaxConcurrentCalls > maxPendingHandshakes {
-			t.Errorf("Observed %d concurrent handshakes; want <= %d", stat.MaxConcurrentCalls, maxPendingHandshakes)
+		if stat.MaxConcurrentCalls > int(envconfig.ALTSMaxConcurrentHandshakes) {
+			t.Errorf("Observed %d concurrent handshakes; want <= %d", stat.MaxConcurrentCalls, envconfig.ALTSMaxConcurrentHandshakes)
 		}
 	}
 }
@@ -258,7 +292,10 @@ func (s) TestPeerNotResponding(t *testing.T) {
 		},
 		side: core.ClientSide,
 	}
-	_, context, err := chs.ClientHandshake(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+	_, context, err := chs.ClientHandshake(ctx)
 	chs.Close()
 	if context != nil {
 		t.Error("expected non-nil ALTS context")
@@ -266,4 +303,68 @@ func (s) TestPeerNotResponding(t *testing.T) {
 	if got, want := err, core.PeerNotRespondingError; got != want {
 		t.Errorf("ClientHandshake() = %v, want %v", got, want)
 	}
+}
+
+func (s) TestNewClientHandshaker(t *testing.T) {
+	conn := testutil.NewTestConn(nil, nil)
+	clientConn := &grpc.ClientConn{}
+	opts := &ClientHandshakerOptions{}
+	hs, err := NewClientHandshaker(context.Background(), clientConn, conn, opts)
+	if err != nil {
+		t.Errorf("NewClientHandshaker returned unexpected error: %v", err)
+	}
+	expectedHs := &altsHandshaker{
+		stream:     nil,
+		conn:       conn,
+		clientConn: clientConn,
+		clientOpts: opts,
+		serverOpts: nil,
+		side:       core.ClientSide,
+	}
+	cmpOpts := []cmp.Option{
+		cmp.AllowUnexported(altsHandshaker{}),
+		cmpopts.IgnoreFields(altsHandshaker{}, "conn", "clientConn"),
+	}
+	if got, want := hs.(*altsHandshaker), expectedHs; !cmp.Equal(got, want, cmpOpts...) {
+		t.Errorf("NewClientHandshaker() returned unexpected handshaker: got: %v, want: %v", got, want)
+	}
+	if hs.(*altsHandshaker).stream != nil {
+		t.Errorf("NewClientHandshaker() returned handshaker with non-nil stream")
+	}
+	if hs.(*altsHandshaker).clientConn != clientConn {
+		t.Errorf("NewClientHandshaker() returned handshaker with unexpected clientConn")
+	}
+	hs.Close()
+}
+
+func (s) TestNewServerHandshaker(t *testing.T) {
+	conn := testutil.NewTestConn(nil, nil)
+	clientConn := &grpc.ClientConn{}
+	opts := &ServerHandshakerOptions{}
+	hs, err := NewServerHandshaker(context.Background(), clientConn, conn, opts)
+	if err != nil {
+		t.Errorf("NewServerHandshaker returned unexpected error: %v", err)
+	}
+	expectedHs := &altsHandshaker{
+		stream:     nil,
+		conn:       conn,
+		clientConn: clientConn,
+		clientOpts: nil,
+		serverOpts: opts,
+		side:       core.ServerSide,
+	}
+	cmpOpts := []cmp.Option{
+		cmp.AllowUnexported(altsHandshaker{}),
+		cmpopts.IgnoreFields(altsHandshaker{}, "conn", "clientConn"),
+	}
+	if got, want := hs.(*altsHandshaker), expectedHs; !cmp.Equal(got, want, cmpOpts...) {
+		t.Errorf("NewServerHandshaker() returned unexpected handshaker: got: %v, want: %v", got, want)
+	}
+	if hs.(*altsHandshaker).stream != nil {
+		t.Errorf("NewServerHandshaker() returned handshaker with non-nil stream")
+	}
+	if hs.(*altsHandshaker).clientConn != clientConn {
+		t.Errorf("NewServerHandshaker() returned handshaker with unexpected clientConn")
+	}
+	hs.Close()
 }
