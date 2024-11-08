@@ -20,6 +20,9 @@ set +e
 export TMPDIR=$(mktemp -d)
 trap "rm -rf ${TMPDIR}" EXIT
 
+export SERVER_PORT=50051
+export UNIX_ADDR=abstract-unix-socket
+
 clean () {
   for i in {1..10}; do
     jobs -p | xargs -n1 pkill -P
@@ -49,45 +52,103 @@ EXAMPLES=(
     "helloworld"
     "route_guide"
     "features/authentication"
+    "features/authz"
+    "features/cancellation"
     "features/compression"
+    "features/customloadbalancer"
     "features/deadline"
     "features/encryption/TLS"
-    "features/errors"
+    "features/error_details"
+    "features/error_handling"
+    "features/flow_control"
     "features/interceptor"
     "features/load_balancing"
     "features/metadata"
+    "features/metadata_interceptor"
     "features/multiplex"
     "features/name_resolving"
+    "features/orca"
+    "features/retry"
+    "features/unix_abstract"
 )
+
+declare -A SERVER_ARGS=(
+    ["features/unix_abstract"]="-addr $UNIX_ADDR"
+    ["default"]="-port $SERVER_PORT"
+)
+
+declare -A CLIENT_ARGS=(
+    ["features/unix_abstract"]="-addr $UNIX_ADDR"
+    ["features/orca"]="-test=true"
+    ["default"]="-addr localhost:$SERVER_PORT"
+)
+
+declare -A SERVER_WAIT_COMMAND=(
+    ["features/unix_abstract"]="lsof -U | grep $UNIX_ADDR"
+    ["default"]="lsof -i :$SERVER_PORT | grep $SERVER_PORT"
+)
+
+wait_for_server () {
+    example=$1
+    wait_command=${SERVER_WAIT_COMMAND[$example]:-${SERVER_WAIT_COMMAND["default"]}}
+    echo "$(tput setaf 4) waiting for server to start $(tput sgr 0)"
+    for i in {1..10}; do
+        eval "$wait_command" 2>&1 &>/dev/null
+        if [ $? -eq 0 ]; then
+            pass "server started"
+            return
+        fi
+        sleep 1
+    done
+    fail "cannot determine if server started"
+}
 
 declare -A EXPECTED_SERVER_OUTPUT=(
     ["helloworld"]="Received: world"
     ["route_guide"]=""
     ["features/authentication"]="server starting on port 50051..."
+    ["features/authz"]="unary echoing message \"hello world\""
+    ["features/cancellation"]="server: error receiving from stream: rpc error: code = Canceled desc = context canceled"
     ["features/compression"]="UnaryEcho called with message \"compress\""
+    ["features/customloadbalancer"]="serving on localhost:50051"
     ["features/deadline"]=""
     ["features/encryption/TLS"]=""
-    ["features/errors"]=""
+    ["features/error_details"]=""
+    ["features/error_handling"]=""
+    ["features/flow_control"]="Stream ended successfully."
     ["features/interceptor"]="unary echoing message \"hello world\""
     ["features/load_balancing"]="serving on :50051"
     ["features/metadata"]="message:\"this is examples/metadata\", sending echo"
+    ["features/metadata_interceptor"]="key1 from metadata: "
     ["features/multiplex"]=":50051"
     ["features/name_resolving"]="serving on localhost:50051"
+    ["features/orca"]="Server listening"
+    ["features/retry"]="request succeeded count: 4"
+    ["features/unix_abstract"]="serving on @abstract-unix-socket"
 )
 
 declare -A EXPECTED_CLIENT_OUTPUT=(
     ["helloworld"]="Greeting: Hello world"
     ["route_guide"]="Feature: name: \"\", point:(416851321, -742674555)"
     ["features/authentication"]="UnaryEcho:  hello world"
+    ["features/authz"]="UnaryEcho:  hello world"
+    ["features/cancellation"]="cancelling context"
     ["features/compression"]="UnaryEcho call returned \"compress\", <nil>"
+    ["features/customloadbalancer"]="Successful multiple iterations of 1:2 ratio"
     ["features/deadline"]="wanted = DeadlineExceeded, got = DeadlineExceeded"
     ["features/encryption/TLS"]="UnaryEcho:  hello world"
-    ["features/errors"]="Greeting: Hello world"
+    ["features/error_details"]="Greeting: Hello world"
+    ["features/error_handling"]="Received error"
+    ["features/flow_control"]="Stream ended successfully."
     ["features/interceptor"]="UnaryEcho:  hello world"
     ["features/load_balancing"]="calling helloworld.Greeter/SayHello with pick_first"
     ["features/metadata"]="this is examples/metadata"
+    ["features/metadata_interceptor"]="BidiStreaming Echo:  hello world"
     ["features/multiplex"]="Greeting:  Hello multiplex"
     ["features/name_resolving"]="calling helloworld.Greeter/SayHello to \"example:///resolver.example.grpc.io\""
+    ["features/orca"]="Per-call load report received: map\[db_queries:10\]"
+    ["features/retry"]="UnaryEcho reply: message:\"Try and Success\""
+    ["features/unix_abstract"]="calling echo.Echo/UnaryEcho to unix-abstract:abstract-unix-socket"
 )
 
 cd ./examples
@@ -102,6 +163,13 @@ for example in ${EXAMPLES[@]}; do
         pass "successfully built server"
     fi
 
+    # Start server
+    SERVER_LOG="$(mktemp)"
+    server_args=${SERVER_ARGS[$example]:-${SERVER_ARGS["default"]}}
+    go run ./$example/*server/*.go $server_args &> $SERVER_LOG  &
+
+    wait_for_server $example
+
     # Build client
     if ! go build -o /dev/null ./${example}/*client/*.go; then
         fail "failed to build client"
@@ -109,12 +177,10 @@ for example in ${EXAMPLES[@]}; do
         pass "successfully built client"
     fi
 
-    # Start server
-    SERVER_LOG="$(mktemp)"
-    go run ./$example/*server/*.go &> $SERVER_LOG  &
-
+    # Start client
     CLIENT_LOG="$(mktemp)"
-    if ! timeout 20 go run ${example}/*client/*.go &> $CLIENT_LOG; then
+    client_args=${CLIENT_ARGS[$example]:-${CLIENT_ARGS["default"]}}
+    if ! timeout 20 go run ${example}/*client/*.go $client_args &> $CLIENT_LOG; then
         fail "client failed to communicate with server
         got server log:
         $(cat $SERVER_LOG)

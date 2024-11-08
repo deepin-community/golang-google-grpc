@@ -18,11 +18,10 @@ First start the server:
 go run server/main.go
 ```
 
-Then run the client.  Note that when running the client, `GRPC_GO_RETRY=on` must be set in
-your environment:
+Then run the client:
 
 ```bash
-GRPC_GO_RETRY=on go run client/main.go
+go run client/main.go
 ```
 
 ## Usage
@@ -62,5 +61,5 @@ To use the above service config, pass it with `grpc.WithDefaultServiceConfig` to
 `grpc.Dial`.
 
 ```go
-conn, err := grpc.Dial(ctx,grpc.WithInsecure(), grpc.WithDefaultServiceConfig(retryPolicy))
+conn, err := grpc.Dial(ctx,grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultServiceConfig(retryPolicy))
 ```

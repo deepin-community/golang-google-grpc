@@ -50,10 +50,13 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/benchmark"
-	testpb "google.golang.org/grpc/benchmark/grpc_testing"
 	"google.golang.org/grpc/benchmark/stats"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/grpclog"
 	"google.golang.org/grpc/internal/syscall"
+
+	testgrpc "google.golang.org/grpc/interop/grpc_testing"
+	testpb "google.golang.org/grpc/interop/grpc_testing"
 )
 
 var (
@@ -83,7 +86,7 @@ var (
 func main() {
 	flag.Parse()
 	if *testName == "" {
-		logger.Fatalf("test_name not set")
+		logger.Fatal("-test_name not set")
 	}
 	req := &testpb.SimpleRequest{
 		ResponseType: testpb.PayloadType_COMPRESSABLE,
@@ -133,7 +136,12 @@ func main() {
 func buildConnections(ctx context.Context) []*grpc.ClientConn {
 	ccs := make([]*grpc.ClientConn, *numConn)
 	for i := range ccs {
-		ccs[i] = benchmark.NewClientConnWithContext(ctx, "localhost:"+*port, grpc.WithInsecure(), grpc.WithBlock())
+		ccs[i] = benchmark.NewClientConnWithContext(ctx, "localhost:"+*port,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithBlock(),
+			grpc.WithWriteBufferSize(128*1024),
+			grpc.WithReadBufferSize(128*1024),
+		)
 	}
 	return ccs
 }
@@ -164,7 +172,7 @@ func runWithConn(cc *grpc.ClientConn, req *testpb.SimpleRequest, warmDeadline, e
 }
 
 func makeCaller(cc *grpc.ClientConn, req *testpb.SimpleRequest) func() {
-	client := testpb.NewBenchmarkServiceClient(cc)
+	client := testgrpc.NewBenchmarkServiceClient(cc)
 	if *rpcType == "unary" {
 		return func() {
 			if _, err := client.UnaryCall(context.Background(), req); err != nil {

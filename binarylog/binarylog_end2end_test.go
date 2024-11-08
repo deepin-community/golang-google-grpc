@@ -28,16 +28,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/binarylog"
-	pb "google.golang.org/grpc/binarylog/grpc_binarylog_v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/grpclog"
 	iblog "google.golang.org/grpc/internal/binarylog"
 	"google.golang.org/grpc/internal/grpctest"
+	"google.golang.org/grpc/internal/stubserver"
 	"google.golang.org/grpc/metadata"
-	testpb "google.golang.org/grpc/stats/grpc_testing"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+
+	binlogpb "google.golang.org/grpc/binarylog/grpc_binarylog_v1"
+	testgrpc "google.golang.org/grpc/interop/grpc_testing"
+	testpb "google.golang.org/grpc/interop/grpc_testing"
 )
 
 var grpclogLogger = grpclog.Component("binarylog")
@@ -61,10 +66,10 @@ var testSink = &testBinLogSink{}
 
 type testBinLogSink struct {
 	mu  sync.Mutex
-	buf []*pb.GrpcLogEntry
+	buf []*binlogpb.GrpcLogEntry
 }
 
-func (s *testBinLogSink) Write(e *pb.GrpcLogEntry) error {
+func (s *testBinLogSink) Write(e *binlogpb.GrpcLogEntry) error {
 	s.mu.Lock()
 	s.buf = append(s.buf, e)
 	s.mu.Unlock()
@@ -75,12 +80,12 @@ func (s *testBinLogSink) Close() error { return nil }
 
 // Returns all client entris if client is true, otherwise return all server
 // entries.
-func (s *testBinLogSink) logEntries(client bool) []*pb.GrpcLogEntry {
-	logger := pb.GrpcLogEntry_LOGGER_SERVER
+func (s *testBinLogSink) logEntries(client bool) []*binlogpb.GrpcLogEntry {
+	logger := binlogpb.GrpcLogEntry_LOGGER_SERVER
 	if client {
-		logger = pb.GrpcLogEntry_LOGGER_CLIENT
+		logger = binlogpb.GrpcLogEntry_LOGGER_CLIENT
 	}
-	var ret []*pb.GrpcLogEntry
+	var ret []*binlogpb.GrpcLogEntry
 	s.mu.Lock()
 	for _, e := range s.buf {
 		if e.Logger == logger {
@@ -114,8 +119,19 @@ var (
 	globalRPCID uint64 // RPC id starts with 1, but we do ++ at the beginning of each test.
 )
 
+func idToPayload(id int32) *testpb.Payload {
+	return &testpb.Payload{Body: []byte{byte(id), byte(id >> 8), byte(id >> 16), byte(id >> 24)}}
+}
+
+func payloadToID(p *testpb.Payload) int32 {
+	if p == nil || len(p.Body) != 4 {
+		panic("invalid payload")
+	}
+	return int32(p.Body[0]) + int32(p.Body[1])<<8 + int32(p.Body[2])<<16 + int32(p.Body[3])<<24
+}
+
 type testServer struct {
-	testpb.UnimplementedTestServiceServer
+	testgrpc.UnimplementedTestServiceServer
 	te *test
 }
 
@@ -130,14 +146,14 @@ func (s *testServer) UnaryCall(ctx context.Context, in *testpb.SimpleRequest) (*
 		}
 	}
 
-	if in.Id == errorID {
-		return nil, fmt.Errorf("got error id: %v", in.Id)
+	if id := payloadToID(in.Payload); id == errorID {
+		return nil, fmt.Errorf("got error id: %v", id)
 	}
 
-	return &testpb.SimpleResponse{Id: in.Id}, nil
+	return &testpb.SimpleResponse{Payload: in.Payload}, nil
 }
 
-func (s *testServer) FullDuplexCall(stream testpb.TestService_FullDuplexCallServer) error {
+func (s *testServer) FullDuplexCall(stream testgrpc.TestService_FullDuplexCallServer) error {
 	md, ok := metadata.FromIncomingContext(stream.Context())
 	if ok {
 		if err := stream.SendHeader(md); err != nil {
@@ -155,17 +171,17 @@ func (s *testServer) FullDuplexCall(stream testpb.TestService_FullDuplexCallServ
 			return err
 		}
 
-		if in.Id == errorID {
-			return fmt.Errorf("got error id: %v", in.Id)
+		if id := payloadToID(in.Payload); id == errorID {
+			return fmt.Errorf("got error id: %v", id)
 		}
 
-		if err := stream.Send(&testpb.SimpleResponse{Id: in.Id}); err != nil {
+		if err := stream.Send(&testpb.StreamingOutputCallResponse{Payload: in.Payload}); err != nil {
 			return err
 		}
 	}
 }
 
-func (s *testServer) ClientStreamCall(stream testpb.TestService_ClientStreamCallServer) error {
+func (s *testServer) StreamingInputCall(stream testgrpc.TestService_StreamingInputCallServer) error {
 	md, ok := metadata.FromIncomingContext(stream.Context())
 	if ok {
 		if err := stream.SendHeader(md); err != nil {
@@ -177,19 +193,19 @@ func (s *testServer) ClientStreamCall(stream testpb.TestService_ClientStreamCall
 		in, err := stream.Recv()
 		if err == io.EOF {
 			// read done.
-			return stream.SendAndClose(&testpb.SimpleResponse{Id: int32(0)})
+			return stream.SendAndClose(&testpb.StreamingInputCallResponse{AggregatedPayloadSize: 0})
 		}
 		if err != nil {
 			return err
 		}
 
-		if in.Id == errorID {
-			return fmt.Errorf("got error id: %v", in.Id)
+		if id := payloadToID(in.Payload); id == errorID {
+			return fmt.Errorf("got error id: %v", id)
 		}
 	}
 }
 
-func (s *testServer) ServerStreamCall(in *testpb.SimpleRequest, stream testpb.TestService_ServerStreamCallServer) error {
+func (s *testServer) StreamingOutputCall(in *testpb.StreamingOutputCallRequest, stream testgrpc.TestService_StreamingOutputCallServer) error {
 	md, ok := metadata.FromIncomingContext(stream.Context())
 	if ok {
 		if err := stream.SendHeader(md); err != nil {
@@ -198,12 +214,12 @@ func (s *testServer) ServerStreamCall(in *testpb.SimpleRequest, stream testpb.Te
 		stream.SetTrailer(testTrailerMetadata)
 	}
 
-	if in.Id == errorID {
-		return fmt.Errorf("got error id: %v", in.Id)
+	if id := payloadToID(in.Payload); id == errorID {
+		return fmt.Errorf("got error id: %v", id)
 	}
 
 	for i := 0; i < 5; i++ {
-		if err := stream.Send(&testpb.SimpleResponse{Id: in.Id}); err != nil {
+		if err := stream.Send(&testpb.StreamingOutputCallResponse{Payload: in.Payload}); err != nil {
 			return err
 		}
 	}
@@ -216,7 +232,7 @@ func (s *testServer) ServerStreamCall(in *testpb.SimpleRequest, stream testpb.Te
 type test struct {
 	t *testing.T
 
-	testService testpb.TestServiceServer // nil means none
+	testService testgrpc.TestServiceServer // nil means none
 	// srv and srvAddr are set once startServer is called.
 	srv     *grpc.Server
 	srvAddr string // Server IP without port.
@@ -239,13 +255,10 @@ func (te *test) tearDown() {
 	te.srv.Stop()
 }
 
-type testConfig struct {
-}
-
 // newTest returns a new test using the provided testing.T and
 // environment.  It is returned with default values. Tests should
 // modify it before calling its startServer and clientConn methods.
-func newTest(t *testing.T, tc *testConfig) *test {
+func newTest(t *testing.T) *test {
 	te := &test{
 		t: t,
 	}
@@ -271,7 +284,7 @@ func (lw *listenerWrapper) Accept() (net.Conn, error) {
 
 // startServer starts a gRPC server listening. Callers should defer a
 // call to te.tearDown to clean up.
-func (te *test) startServer(ts testpb.TestServiceServer) {
+func (te *test) startServer(ts testgrpc.TestServiceServer) {
 	te.testService = ts
 	lis, err := net.Listen("tcp", "localhost:0")
 
@@ -287,7 +300,7 @@ func (te *test) startServer(ts testpb.TestServiceServer) {
 	s := grpc.NewServer(opts...)
 	te.srv = s
 	if te.testService != nil {
-		testpb.RegisterTestServiceServer(s, te.testService)
+		testgrpc.RegisterTestServiceServer(s, te.testService)
 	}
 
 	go s.Serve(lis)
@@ -300,10 +313,10 @@ func (te *test) clientConn() *grpc.ClientConn {
 	if te.cc != nil {
 		return te.cc
 	}
-	opts := []grpc.DialOption{grpc.WithInsecure(), grpc.WithBlock()}
+	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock()}
 
 	var err error
-	te.cc, err = grpc.Dial(te.srvAddr, opts...)
+	te.cc, err = grpc.NewClient(te.srvAddr, opts...)
 	if err != nil {
 		te.t.Fatalf("Dial(%q) = %v", te.srvAddr, err)
 	}
@@ -332,11 +345,11 @@ func (te *test) doUnaryCall(c *rpcConfig) (*testpb.SimpleRequest, *testpb.Simple
 		req  *testpb.SimpleRequest
 		err  error
 	)
-	tc := testpb.NewTestServiceClient(te.clientConn())
+	tc := testgrpc.NewTestServiceClient(te.clientConn())
 	if c.success {
-		req = &testpb.SimpleRequest{Id: errorID + 1}
+		req = &testpb.SimpleRequest{Payload: idToPayload(errorID + 1)}
 	} else {
-		req = &testpb.SimpleRequest{Id: errorID}
+		req = &testpb.SimpleRequest{Payload: idToPayload(errorID)}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -346,13 +359,13 @@ func (te *test) doUnaryCall(c *rpcConfig) (*testpb.SimpleRequest, *testpb.Simple
 	return req, resp, err
 }
 
-func (te *test) doFullDuplexCallRoundtrip(c *rpcConfig) ([]*testpb.SimpleRequest, []*testpb.SimpleResponse, error) {
+func (te *test) doFullDuplexCallRoundtrip(c *rpcConfig) ([]proto.Message, []proto.Message, error) {
 	var (
-		reqs  []*testpb.SimpleRequest
-		resps []*testpb.SimpleResponse
+		reqs  []proto.Message
+		resps []proto.Message
 		err   error
 	)
-	tc := testpb.NewTestServiceClient(te.clientConn())
+	tc := testgrpc.NewTestServiceClient(te.clientConn())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = metadata.NewOutgoingContext(ctx, testMetadata)
@@ -372,14 +385,14 @@ func (te *test) doFullDuplexCallRoundtrip(c *rpcConfig) ([]*testpb.SimpleRequest
 		startID = errorID
 	}
 	for i := 0; i < c.count; i++ {
-		req := &testpb.SimpleRequest{
-			Id: int32(i) + startID,
+		req := &testpb.StreamingOutputCallRequest{
+			Payload: idToPayload(int32(i) + startID),
 		}
 		reqs = append(reqs, req)
 		if err = stream.Send(req); err != nil {
 			return reqs, resps, err
 		}
-		var resp *testpb.SimpleResponse
+		var resp *testpb.StreamingOutputCallResponse
 		if resp, err = stream.Recv(); err != nil {
 			return reqs, resps, err
 		}
@@ -395,18 +408,18 @@ func (te *test) doFullDuplexCallRoundtrip(c *rpcConfig) ([]*testpb.SimpleRequest
 	return reqs, resps, nil
 }
 
-func (te *test) doClientStreamCall(c *rpcConfig) ([]*testpb.SimpleRequest, *testpb.SimpleResponse, error) {
+func (te *test) doClientStreamCall(c *rpcConfig) ([]proto.Message, proto.Message, error) {
 	var (
-		reqs []*testpb.SimpleRequest
-		resp *testpb.SimpleResponse
+		reqs []proto.Message
+		resp *testpb.StreamingInputCallResponse
 		err  error
 	)
-	tc := testpb.NewTestServiceClient(te.clientConn())
+	tc := testgrpc.NewTestServiceClient(te.clientConn())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = metadata.NewOutgoingContext(ctx, testMetadata)
 
-	stream, err := tc.ClientStreamCall(ctx)
+	stream, err := tc.StreamingInputCall(ctx)
 	if err != nil {
 		return reqs, resp, err
 	}
@@ -415,8 +428,8 @@ func (te *test) doClientStreamCall(c *rpcConfig) ([]*testpb.SimpleRequest, *test
 		startID = errorID
 	}
 	for i := 0; i < c.count; i++ {
-		req := &testpb.SimpleRequest{
-			Id: int32(i) + startID,
+		req := &testpb.StreamingInputCallRequest{
+			Payload: idToPayload(int32(i) + startID),
 		}
 		reqs = append(reqs, req)
 		if err = stream.Send(req); err != nil {
@@ -427,14 +440,14 @@ func (te *test) doClientStreamCall(c *rpcConfig) ([]*testpb.SimpleRequest, *test
 	return reqs, resp, err
 }
 
-func (te *test) doServerStreamCall(c *rpcConfig) (*testpb.SimpleRequest, []*testpb.SimpleResponse, error) {
+func (te *test) doServerStreamCall(c *rpcConfig) (proto.Message, []proto.Message, error) {
 	var (
-		req   *testpb.SimpleRequest
-		resps []*testpb.SimpleResponse
+		req   *testpb.StreamingOutputCallRequest
+		resps []proto.Message
 		err   error
 	)
 
-	tc := testpb.NewTestServiceClient(te.clientConn())
+	tc := testgrpc.NewTestServiceClient(te.clientConn())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ctx = metadata.NewOutgoingContext(ctx, testMetadata)
@@ -443,13 +456,13 @@ func (te *test) doServerStreamCall(c *rpcConfig) (*testpb.SimpleRequest, []*test
 	if !c.success {
 		startID = errorID
 	}
-	req = &testpb.SimpleRequest{Id: startID}
-	stream, err := tc.ServerStreamCall(ctx, req)
+	req = &testpb.StreamingOutputCallRequest{Payload: idToPayload(startID)}
+	stream, err := tc.StreamingOutputCall(ctx, req)
 	if err != nil {
 		return req, resps, err
 	}
 	for {
-		var resp *testpb.SimpleResponse
+		var resp *testpb.StreamingOutputCallResponse
 		resp, err := stream.Recv()
 		if err == io.EOF {
 			return req, resps, nil
@@ -465,36 +478,36 @@ type expectedData struct {
 	cc *rpcConfig
 
 	method    string
-	requests  []*testpb.SimpleRequest
-	responses []*testpb.SimpleResponse
+	requests  []proto.Message
+	responses []proto.Message
 	err       error
 }
 
-func (ed *expectedData) newClientHeaderEntry(client bool, rpcID, inRPCID uint64) *pb.GrpcLogEntry {
-	logger := pb.GrpcLogEntry_LOGGER_CLIENT
-	var peer *pb.Address
+func (ed *expectedData) newClientHeaderEntry(client bool, rpcID, inRPCID uint64) *binlogpb.GrpcLogEntry {
+	logger := binlogpb.GrpcLogEntry_LOGGER_CLIENT
+	var peer *binlogpb.Address
 	if !client {
-		logger = pb.GrpcLogEntry_LOGGER_SERVER
+		logger = binlogpb.GrpcLogEntry_LOGGER_SERVER
 		ed.te.clientAddrMu.Lock()
-		peer = &pb.Address{
+		peer = &binlogpb.Address{
 			Address: ed.te.clientIP.String(),
 			IpPort:  uint32(ed.te.clientPort),
 		}
 		if ed.te.clientIP.To4() != nil {
-			peer.Type = pb.Address_TYPE_IPV4
+			peer.Type = binlogpb.Address_TYPE_IPV4
 		} else {
-			peer.Type = pb.Address_TYPE_IPV6
+			peer.Type = binlogpb.Address_TYPE_IPV6
 		}
 		ed.te.clientAddrMu.Unlock()
 	}
-	return &pb.GrpcLogEntry{
+	return &binlogpb.GrpcLogEntry{
 		Timestamp:            nil,
 		CallId:               rpcID,
 		SequenceIdWithinCall: inRPCID,
-		Type:                 pb.GrpcLogEntry_EVENT_TYPE_CLIENT_HEADER,
+		Type:                 binlogpb.GrpcLogEntry_EVENT_TYPE_CLIENT_HEADER,
 		Logger:               logger,
-		Payload: &pb.GrpcLogEntry_ClientHeader{
-			ClientHeader: &pb.ClientHeader{
+		Payload: &binlogpb.GrpcLogEntry_ClientHeader{
+			ClientHeader: &binlogpb.ClientHeader{
 				Metadata:   iblog.MdToMetadataProto(testMetadata),
 				MethodName: ed.method,
 				Authority:  ed.te.srvAddr,
@@ -504,29 +517,29 @@ func (ed *expectedData) newClientHeaderEntry(client bool, rpcID, inRPCID uint64)
 	}
 }
 
-func (ed *expectedData) newServerHeaderEntry(client bool, rpcID, inRPCID uint64) *pb.GrpcLogEntry {
-	logger := pb.GrpcLogEntry_LOGGER_SERVER
-	var peer *pb.Address
+func (ed *expectedData) newServerHeaderEntry(client bool, rpcID, inRPCID uint64) *binlogpb.GrpcLogEntry {
+	logger := binlogpb.GrpcLogEntry_LOGGER_SERVER
+	var peer *binlogpb.Address
 	if client {
-		logger = pb.GrpcLogEntry_LOGGER_CLIENT
-		peer = &pb.Address{
+		logger = binlogpb.GrpcLogEntry_LOGGER_CLIENT
+		peer = &binlogpb.Address{
 			Address: ed.te.srvIP.String(),
 			IpPort:  uint32(ed.te.srvPort),
 		}
 		if ed.te.srvIP.To4() != nil {
-			peer.Type = pb.Address_TYPE_IPV4
+			peer.Type = binlogpb.Address_TYPE_IPV4
 		} else {
-			peer.Type = pb.Address_TYPE_IPV6
+			peer.Type = binlogpb.Address_TYPE_IPV6
 		}
 	}
-	return &pb.GrpcLogEntry{
+	return &binlogpb.GrpcLogEntry{
 		Timestamp:            nil,
 		CallId:               rpcID,
 		SequenceIdWithinCall: inRPCID,
-		Type:                 pb.GrpcLogEntry_EVENT_TYPE_SERVER_HEADER,
+		Type:                 binlogpb.GrpcLogEntry_EVENT_TYPE_SERVER_HEADER,
 		Logger:               logger,
-		Payload: &pb.GrpcLogEntry_ServerHeader{
-			ServerHeader: &pb.ServerHeader{
+		Payload: &binlogpb.GrpcLogEntry_ServerHeader{
+			ServerHeader: &binlogpb.ServerHeader{
 				Metadata: iblog.MdToMetadataProto(testMetadata),
 			},
 		},
@@ -534,23 +547,23 @@ func (ed *expectedData) newServerHeaderEntry(client bool, rpcID, inRPCID uint64)
 	}
 }
 
-func (ed *expectedData) newClientMessageEntry(client bool, rpcID, inRPCID uint64, msg *testpb.SimpleRequest) *pb.GrpcLogEntry {
-	logger := pb.GrpcLogEntry_LOGGER_CLIENT
+func (ed *expectedData) newClientMessageEntry(client bool, rpcID, inRPCID uint64, msg proto.Message) *binlogpb.GrpcLogEntry {
+	logger := binlogpb.GrpcLogEntry_LOGGER_CLIENT
 	if !client {
-		logger = pb.GrpcLogEntry_LOGGER_SERVER
+		logger = binlogpb.GrpcLogEntry_LOGGER_SERVER
 	}
 	data, err := proto.Marshal(msg)
 	if err != nil {
 		grpclogLogger.Infof("binarylogging_testing: failed to marshal proto message: %v", err)
 	}
-	return &pb.GrpcLogEntry{
+	return &binlogpb.GrpcLogEntry{
 		Timestamp:            nil,
 		CallId:               rpcID,
 		SequenceIdWithinCall: inRPCID,
-		Type:                 pb.GrpcLogEntry_EVENT_TYPE_CLIENT_MESSAGE,
+		Type:                 binlogpb.GrpcLogEntry_EVENT_TYPE_CLIENT_MESSAGE,
 		Logger:               logger,
-		Payload: &pb.GrpcLogEntry_Message{
-			Message: &pb.Message{
+		Payload: &binlogpb.GrpcLogEntry_Message{
+			Message: &binlogpb.Message{
 				Length: uint32(len(data)),
 				Data:   data,
 			},
@@ -558,23 +571,23 @@ func (ed *expectedData) newClientMessageEntry(client bool, rpcID, inRPCID uint64
 	}
 }
 
-func (ed *expectedData) newServerMessageEntry(client bool, rpcID, inRPCID uint64, msg *testpb.SimpleResponse) *pb.GrpcLogEntry {
-	logger := pb.GrpcLogEntry_LOGGER_CLIENT
+func (ed *expectedData) newServerMessageEntry(client bool, rpcID, inRPCID uint64, msg proto.Message) *binlogpb.GrpcLogEntry {
+	logger := binlogpb.GrpcLogEntry_LOGGER_CLIENT
 	if !client {
-		logger = pb.GrpcLogEntry_LOGGER_SERVER
+		logger = binlogpb.GrpcLogEntry_LOGGER_SERVER
 	}
 	data, err := proto.Marshal(msg)
 	if err != nil {
 		grpclogLogger.Infof("binarylogging_testing: failed to marshal proto message: %v", err)
 	}
-	return &pb.GrpcLogEntry{
+	return &binlogpb.GrpcLogEntry{
 		Timestamp:            nil,
 		CallId:               rpcID,
 		SequenceIdWithinCall: inRPCID,
-		Type:                 pb.GrpcLogEntry_EVENT_TYPE_SERVER_MESSAGE,
+		Type:                 binlogpb.GrpcLogEntry_EVENT_TYPE_SERVER_MESSAGE,
 		Logger:               logger,
-		Payload: &pb.GrpcLogEntry_Message{
-			Message: &pb.Message{
+		Payload: &binlogpb.GrpcLogEntry_Message{
+			Message: &binlogpb.Message{
 				Length: uint32(len(data)),
 				Data:   data,
 			},
@@ -582,34 +595,34 @@ func (ed *expectedData) newServerMessageEntry(client bool, rpcID, inRPCID uint64
 	}
 }
 
-func (ed *expectedData) newHalfCloseEntry(client bool, rpcID, inRPCID uint64) *pb.GrpcLogEntry {
-	logger := pb.GrpcLogEntry_LOGGER_CLIENT
+func (ed *expectedData) newHalfCloseEntry(client bool, rpcID, inRPCID uint64) *binlogpb.GrpcLogEntry {
+	logger := binlogpb.GrpcLogEntry_LOGGER_CLIENT
 	if !client {
-		logger = pb.GrpcLogEntry_LOGGER_SERVER
+		logger = binlogpb.GrpcLogEntry_LOGGER_SERVER
 	}
-	return &pb.GrpcLogEntry{
+	return &binlogpb.GrpcLogEntry{
 		Timestamp:            nil,
 		CallId:               rpcID,
 		SequenceIdWithinCall: inRPCID,
-		Type:                 pb.GrpcLogEntry_EVENT_TYPE_CLIENT_HALF_CLOSE,
+		Type:                 binlogpb.GrpcLogEntry_EVENT_TYPE_CLIENT_HALF_CLOSE,
 		Payload:              nil, // No payload here.
 		Logger:               logger,
 	}
 }
 
-func (ed *expectedData) newServerTrailerEntry(client bool, rpcID, inRPCID uint64, stErr error) *pb.GrpcLogEntry {
-	logger := pb.GrpcLogEntry_LOGGER_SERVER
-	var peer *pb.Address
+func (ed *expectedData) newServerTrailerEntry(client bool, rpcID, inRPCID uint64, stErr error) *binlogpb.GrpcLogEntry {
+	logger := binlogpb.GrpcLogEntry_LOGGER_SERVER
+	var peer *binlogpb.Address
 	if client {
-		logger = pb.GrpcLogEntry_LOGGER_CLIENT
-		peer = &pb.Address{
+		logger = binlogpb.GrpcLogEntry_LOGGER_CLIENT
+		peer = &binlogpb.Address{
 			Address: ed.te.srvIP.String(),
 			IpPort:  uint32(ed.te.srvPort),
 		}
 		if ed.te.srvIP.To4() != nil {
-			peer.Type = pb.Address_TYPE_IPV4
+			peer.Type = binlogpb.Address_TYPE_IPV4
 		} else {
-			peer.Type = pb.Address_TYPE_IPV6
+			peer.Type = binlogpb.Address_TYPE_IPV6
 		}
 	}
 	st, ok := status.FromError(stErr)
@@ -627,14 +640,14 @@ func (ed *expectedData) newServerTrailerEntry(client bool, rpcID, inRPCID uint64
 			grpclogLogger.Infof("binarylogging: failed to marshal status proto: %v", err)
 		}
 	}
-	return &pb.GrpcLogEntry{
+	return &binlogpb.GrpcLogEntry{
 		Timestamp:            nil,
 		CallId:               rpcID,
 		SequenceIdWithinCall: inRPCID,
-		Type:                 pb.GrpcLogEntry_EVENT_TYPE_SERVER_TRAILER,
+		Type:                 binlogpb.GrpcLogEntry_EVENT_TYPE_SERVER_TRAILER,
 		Logger:               logger,
-		Payload: &pb.GrpcLogEntry_Trailer{
-			Trailer: &pb.Trailer{
+		Payload: &binlogpb.GrpcLogEntry_Trailer{
+			Trailer: &binlogpb.Trailer{
 				Metadata: iblog.MdToMetadataProto(testTrailerMetadata),
 				// st will be nil if err was not a status error, but nil is ok.
 				StatusCode:    uint32(st.Code()),
@@ -646,20 +659,20 @@ func (ed *expectedData) newServerTrailerEntry(client bool, rpcID, inRPCID uint64
 	}
 }
 
-func (ed *expectedData) newCancelEntry(rpcID, inRPCID uint64) *pb.GrpcLogEntry {
-	return &pb.GrpcLogEntry{
+func (ed *expectedData) newCancelEntry(rpcID, inRPCID uint64) *binlogpb.GrpcLogEntry {
+	return &binlogpb.GrpcLogEntry{
 		Timestamp:            nil,
 		CallId:               rpcID,
 		SequenceIdWithinCall: inRPCID,
-		Type:                 pb.GrpcLogEntry_EVENT_TYPE_CANCEL,
-		Logger:               pb.GrpcLogEntry_LOGGER_CLIENT,
+		Type:                 binlogpb.GrpcLogEntry_EVENT_TYPE_CANCEL,
+		Logger:               binlogpb.GrpcLogEntry_LOGGER_CLIENT,
 		Payload:              nil,
 	}
 }
 
-func (ed *expectedData) toClientLogEntries() []*pb.GrpcLogEntry {
+func (ed *expectedData) toClientLogEntries() []*binlogpb.GrpcLogEntry {
 	var (
-		ret     []*pb.GrpcLogEntry
+		ret     []*binlogpb.GrpcLogEntry
 		idInRPC uint64 = 1
 	)
 	ret = append(ret, ed.newClientHeaderEntry(true, globalRPCID, idInRPC))
@@ -715,9 +728,9 @@ func (ed *expectedData) toClientLogEntries() []*pb.GrpcLogEntry {
 	return ret
 }
 
-func (ed *expectedData) toServerLogEntries() []*pb.GrpcLogEntry {
+func (ed *expectedData) toServerLogEntries() []*binlogpb.GrpcLogEntry {
 	var (
-		ret     []*pb.GrpcLogEntry
+		ret     []*binlogpb.GrpcLogEntry
 		idInRPC uint64 = 1
 	)
 	ret = append(ret, ed.newClientHeaderEntry(false, globalRPCID, idInRPC))
@@ -781,8 +794,8 @@ func (ed *expectedData) toServerLogEntries() []*pb.GrpcLogEntry {
 	return ret
 }
 
-func runRPCs(t *testing.T, tc *testConfig, cc *rpcConfig) *expectedData {
-	te := newTest(t, tc)
+func runRPCs(t *testing.T, cc *rpcConfig) *expectedData {
+	te := newTest(t)
 	te.startServer(&testServer{te: te})
 	defer te.tearDown()
 
@@ -795,20 +808,20 @@ func runRPCs(t *testing.T, tc *testConfig, cc *rpcConfig) *expectedData {
 	case unaryRPC:
 		expect.method = "/grpc.testing.TestService/UnaryCall"
 		req, resp, err := te.doUnaryCall(cc)
-		expect.requests = []*testpb.SimpleRequest{req}
-		expect.responses = []*testpb.SimpleResponse{resp}
+		expect.requests = []proto.Message{req}
+		expect.responses = []proto.Message{resp}
 		expect.err = err
 	case clientStreamRPC:
-		expect.method = "/grpc.testing.TestService/ClientStreamCall"
+		expect.method = "/grpc.testing.TestService/StreamingInputCall"
 		reqs, resp, err := te.doClientStreamCall(cc)
 		expect.requests = reqs
-		expect.responses = []*testpb.SimpleResponse{resp}
+		expect.responses = []proto.Message{resp}
 		expect.err = err
 	case serverStreamRPC:
-		expect.method = "/grpc.testing.TestService/ServerStreamCall"
+		expect.method = "/grpc.testing.TestService/StreamingOutputCall"
 		req, resps, err := te.doServerStreamCall(cc)
 		expect.responses = resps
-		expect.requests = []*testpb.SimpleRequest{req}
+		expect.requests = []proto.Message{req}
 		expect.err = err
 	case fullDuplexStreamRPC, cancelRPC:
 		expect.method = "/grpc.testing.TestService/FullDuplexCall"
@@ -827,7 +840,7 @@ func runRPCs(t *testing.T, tc *testConfig, cc *rpcConfig) *expectedData {
 //
 // This function is typically called with only two entries. It's written in this
 // way so the code can be put in a for loop instead of copied twice.
-func equalLogEntry(entries ...*pb.GrpcLogEntry) (equal bool) {
+func equalLogEntry(entries ...*binlogpb.GrpcLogEntry) (equal bool) {
 	for i, e := range entries {
 		// Clear out some fields we don't compare.
 		e.Timestamp = nil
@@ -856,9 +869,9 @@ func equalLogEntry(entries ...*pb.GrpcLogEntry) (equal bool) {
 
 func testClientBinaryLog(t *testing.T, c *rpcConfig) error {
 	defer testSink.clear()
-	expect := runRPCs(t, &testConfig{}, c)
+	expect := runRPCs(t, c)
 	want := expect.toClientLogEntries()
-	var got []*pb.GrpcLogEntry
+	var got []*binlogpb.GrpcLogEntry
 	// In racy cases, some entries are not logged when the RPC is finished (e.g.
 	// context.Cancel).
 	//
@@ -956,9 +969,9 @@ func (s) TestClientBinaryLogCancel(t *testing.T) {
 
 func testServerBinaryLog(t *testing.T, c *rpcConfig) error {
 	defer testSink.clear()
-	expect := runRPCs(t, &testConfig{}, c)
+	expect := runRPCs(t, c)
 	want := expect.toServerLogEntries()
-	var got []*pb.GrpcLogEntry
+	var got []*binlogpb.GrpcLogEntry
 	// In racy cases, some entries are not logged when the RPC is finished (e.g.
 	// context.Cancel). This is unlikely to happen on server side, but it does
 	// no harm to retry.
@@ -1046,5 +1059,41 @@ func (s) TestServerBinaryLogFullDuplexError(t *testing.T) {
 	count := 5
 	if err := testServerBinaryLog(t, &rpcConfig{count: count, success: false, callType: fullDuplexStreamRPC}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestCanceledStatus ensures a server that responds with a Canceled status has
+// its trailers logged appropriately and is not treated as a canceled RPC.
+func (s) TestCanceledStatus(t *testing.T) {
+	defer testSink.clear()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const statusMsgWant = "server returned Canceled"
+	ss := &stubserver.StubServer{
+		UnaryCallF: func(ctx context.Context, in *testpb.SimpleRequest) (*testpb.SimpleResponse, error) {
+			grpc.SetTrailer(ctx, metadata.Pairs("key", "value"))
+			return nil, status.Error(codes.Canceled, statusMsgWant)
+		},
+	}
+	if err := ss.Start(nil); err != nil {
+		t.Fatalf("Error starting endpoint server: %v", err)
+	}
+	defer ss.Stop()
+
+	if _, err := ss.Client.UnaryCall(ctx, &testpb.SimpleRequest{}); status.Code(err) != codes.Canceled {
+		t.Fatalf("Received unexpected error from UnaryCall: %v; want Canceled", err)
+	}
+
+	got := testSink.logEntries(true)
+	last := got[len(got)-1]
+	if last.Type != binlogpb.GrpcLogEntry_EVENT_TYPE_SERVER_TRAILER ||
+		last.GetTrailer().GetStatusCode() != uint32(codes.Canceled) ||
+		last.GetTrailer().GetStatusMessage() != statusMsgWant ||
+		len(last.GetTrailer().GetMetadata().GetEntry()) != 1 ||
+		last.GetTrailer().GetMetadata().GetEntry()[0].GetKey() != "key" ||
+		string(last.GetTrailer().GetMetadata().GetEntry()[0].GetValue()) != "value" {
+		t.Fatalf("Got binary log: %+v; want last entry is server trailing with status Canceled", got)
 	}
 }
