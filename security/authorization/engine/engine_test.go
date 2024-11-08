@@ -17,6 +17,7 @@
 package engine
 
 import (
+	"context"
 	"reflect"
 	"sort"
 	"testing"
@@ -44,15 +45,19 @@ type fakeProgram struct {
 	err error
 }
 
-func (fake fakeProgram) Eval(vars interface{}) (ref.Val, *cel.EvalDetails, error) {
+func (fake fakeProgram) Eval(vars any) (ref.Val, *cel.EvalDetails, error) {
 	return fake.out, nil, fake.err
 }
 
-type valMock struct {
-	val interface{}
+func (fake fakeProgram) ContextEval(ctx context.Context, vars any) (ref.Val, *cel.EvalDetails, error) {
+	return fake.Eval(vars)
 }
 
-func (mock valMock) ConvertToNative(typeDesc reflect.Type) (interface{}, error) {
+type valMock struct {
+	val any
+}
+
+func (mock valMock) ConvertToNative(typeDesc reflect.Type) (any, error) {
 	return nil, nil
 }
 
@@ -71,7 +76,7 @@ func (mock valMock) Type() ref.Type {
 	return nil
 }
 
-func (mock valMock) Value() interface{} {
+func (mock valMock) Value() any {
 	return mock.val
 }
 

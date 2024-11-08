@@ -1,18 +1,25 @@
 #!/usr/bin/make -f
 
+# Exclude benchmark and examples, as well as anything that imports cncf-xds and
+# envoyproxy-go-control-plane (which are not in Debian).
 export DH_GOLANG_EXCLUDES := \
-  benchmark \
-  credentials/tls/certprovider/meshca \
-  examples \
-  interop/alts \
-  interop \
-  profiling \
-  security/advancedtls \
-  security/authorization \
-  stress \
-  test/go_vet \
-  test/tools \
-  xds
+	^google.golang.org/grpc/authz \
+	^google.golang.org/grpc/balancer/weightedroundrobin \
+	^google.golang.org/grpc/benchmark \
+	^google.golang.org/grpc/credentials/xds \
+	^google.golang.org/grpc/examples \
+	^google.golang.org/grpc/gcp/observability \
+	^google.golang.org/grpc/internal/credentials/xds \
+	^google.golang.org/grpc/internal/testutils \
+	^google.golang.org/grpc/internal/xds \
+	^google.golang.org/grpc/interop \
+	^google.golang.org/grpc/orca \
+	^google.golang.org/grpc/security/advancedtls \
+	^google.golang.org/grpc/security/authorization/engine \
+	^google.golang.org/grpc/stats/opentelemetry \
+	^google.golang.org/grpc/test/xds \
+	^google.golang.org/grpc/admin/test \
+	^google.golang.org/grpc/xds
 
 export DH_GOLANG_INSTALL_EXTRA := regenerate.sh debian/missing-sources
 
@@ -23,16 +30,20 @@ SRC_DIR :=  $(CURDIR)/_build/src/google.golang.org/grpc
 %:
 	dh $@ --buildsystem=golang --builddirectory=_build
 
-# use override_dh_auto_configure instead of execute_after_dh_auto_configure to
-# allow dh_golang_autopkgtest to rewrite.
-override_dh_auto_configure:
-	dh_auto_configure
+execute_after_dh_auto_configure:
+	dh_auto_configure -O--buildsystem=golang -O--builddirectory=_build
 	DH_GOLANG_BUILDPKG=google.golang.org/grpc/cmd/protoc-gen-go-grpc dh_auto_build
-	find $(SRC_DIR) -not -path '*/reflection/grpc_testingv3/*' -type f -name '*.pb.go'\
+	find $(SRC_DIR) -not -path '*/grpc_testing_not_regenerate/*' -type f -name '*.pb.go'\
 		 -delete -printf 'removed %p\n'
 	cd $(SRC_DIR) && ./regenerate.sh
 
 override_dh_auto_test:
-	# internal/resolver/dns test is unreliable.
-	DH_GOLANG_EXCLUDES="$(DH_GOLANG_EXCLUDES) internal/resolver/dns" \
-	dh_auto_test -- -short
+	# admin/test fails to setup
+	DH_GOLANG_EXCLUDES="$(DH_GOLANG_EXCLUDES) admin" \
+		dh_auto_test -O--buildsystem=golang -O--builddirectory=_build
+
+execute_after_dh_install:
+	rm -rf $(CURDIR)/debian/tmp/usr/bin/cmd
+
+# override_dh_auto_test:
+# 	# Tests disabled, unreliable

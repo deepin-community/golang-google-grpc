@@ -22,16 +22,26 @@ import (
 	"context"
 	"net"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"google.golang.org/grpc/internal/transport"
+	"google.golang.org/grpc/status"
 )
 
-type emptyServiceServer interface{}
+type emptyServiceServer any
 
 type testServer struct{}
+
+func errorDesc(err error) string {
+	if s, ok := status.FromError(err); ok {
+		return s.Message()
+	}
+	return err.Error()
+}
 
 func (s) TestStopBeforeServe(t *testing.T) {
 	lis, err := net.Listen("tcp", "localhost:0")
@@ -121,6 +131,34 @@ func (s) TestGetServiceInfo(t *testing.T) {
 	}
 }
 
+func (s) TestRetryChainedInterceptor(t *testing.T) {
+	var records []int
+	i1 := func(ctx context.Context, req any, info *UnaryServerInfo, handler UnaryHandler) (resp any, err error) {
+		records = append(records, 1)
+		// call handler twice to simulate a retry here.
+		handler(ctx, req)
+		return handler(ctx, req)
+	}
+	i2 := func(ctx context.Context, req any, info *UnaryServerInfo, handler UnaryHandler) (resp any, err error) {
+		records = append(records, 2)
+		return handler(ctx, req)
+	}
+	i3 := func(ctx context.Context, req any, info *UnaryServerInfo, handler UnaryHandler) (resp any, err error) {
+		records = append(records, 3)
+		return handler(ctx, req)
+	}
+
+	ii := chainUnaryInterceptors([]UnaryServerInterceptor{i1, i2, i3})
+
+	handler := func(ctx context.Context, req any) (any, error) {
+		return nil, nil
+	}
+	ii(context.Background(), nil, nil, handler)
+	if !cmp.Equal(records, []int{1, 2, 3, 2, 3}) {
+		t.Fatalf("retry failed on chained interceptors: %v", records)
+	}
+}
+
 func (s) TestStreamContext(t *testing.T) {
 	expectedStream := &transport.Stream{}
 	ctx := NewContextWithServerTransportStream(context.Background(), expectedStream)
@@ -128,5 +166,61 @@ func (s) TestStreamContext(t *testing.T) {
 	stream, ok := s.(*transport.Stream)
 	if !ok || expectedStream != stream {
 		t.Fatalf("GetStreamFromContext(%v) = %v, %t, want: %v, true", ctx, stream, ok, expectedStream)
+	}
+}
+
+func BenchmarkChainUnaryInterceptor(b *testing.B) {
+	for _, n := range []int{1, 3, 5, 10} {
+		n := n
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			interceptors := make([]UnaryServerInterceptor, 0, n)
+			for i := 0; i < n; i++ {
+				interceptors = append(interceptors, func(
+					ctx context.Context, req any, info *UnaryServerInfo, handler UnaryHandler,
+				) (any, error) {
+					return handler(ctx, req)
+				})
+			}
+
+			s := NewServer(ChainUnaryInterceptor(interceptors...))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := s.opts.unaryInt(context.Background(), nil, nil,
+					func(ctx context.Context, req any) (any, error) {
+						return nil, nil
+					},
+				); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkChainStreamInterceptor(b *testing.B) {
+	for _, n := range []int{1, 3, 5, 10} {
+		n := n
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			interceptors := make([]StreamServerInterceptor, 0, n)
+			for i := 0; i < n; i++ {
+				interceptors = append(interceptors, func(
+					srv any, ss ServerStream, info *StreamServerInfo, handler StreamHandler,
+				) error {
+					return handler(srv, ss)
+				})
+			}
+
+			s := NewServer(ChainStreamInterceptor(interceptors...))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := s.opts.streamInt(nil, nil, nil, func(srv any, stream ServerStream) error {
+					return nil
+				}); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

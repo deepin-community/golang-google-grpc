@@ -28,7 +28,7 @@ Then change your current directory to `grpc-go/examples/route_guide`:
 $ cd $GOPATH/src/google.golang.org/grpc/examples/route_guide
 ```
 
-You also should have the relevant tools installed to generate the server and client interface code - if you don't already, follow the setup instructions in [the Go quick start guide](https://github.com/grpc/grpc-go/tree/master/examples/).
+Ensure you have the relevant tools installed to generate the server and client interface code. If you don't, follow the setup instructions in [the Go quick start guide](https://grpc.io/docs/languages/go/quickstart).
 
 
 ## Defining the service
@@ -89,18 +89,10 @@ message Point {
 
 ## Generating client and server code
 
-Next we need to generate the gRPC client and server interfaces from our `.proto` service definition. We do this using the protocol buffer compiler `protoc` with a special gRPC Go plugin.
-
-For simplicity, we've provided a [bash script](https://github.com/grpc/grpc-go/blob/master/codegen.sh) that runs `protoc` for you with the appropriate plugin, input, and output (if you want to run this by yourself, make sure you've installed protoc and followed the gRPC-Go [installation instructions](https://github.com/grpc/grpc-go/blob/master/README.md) first):
+Next we need to generate the gRPC client and server interfaces from our `.proto` service definition. We do this using the protocol buffer compiler `protoc` with a special gRPC Go plugin (if you want to run this by yourself, make sure you've installed protoc and followed the gRPC-Go [installation instructions](https://github.com/grpc/grpc-go/blob/master/README.md) first) and run:
 
 ```shell
-$ codegen.sh route_guide.proto
-```
-
-which actually runs:
-
-```shell
-$ protoc --go_out=plugins=grpc:. route_guide.proto
+protoc --go_out=.  --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative "route_guide.proto"
 ```
 
 Running this command generates the following file in your current directory:

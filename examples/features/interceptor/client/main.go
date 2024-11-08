@@ -40,12 +40,12 @@ var addr = flag.String("addr", "localhost:50051", "the address to connect to")
 const fallbackToken = "some-secret-token"
 
 // logger is to mock a sophisticated logging system. To simplify the example, we just print out the content.
-func logger(format string, a ...interface{}) {
+func logger(format string, a ...any) {
 	fmt.Printf("LOG:\t"+format+"\n", a...)
 }
 
 // unaryInterceptor is an example unary interceptor.
-func unaryInterceptor(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+func unaryInterceptor(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 	var credsConfigured bool
 	for _, o := range opts {
 		_, ok := o.(grpc.PerRPCCredsCallOption)
@@ -55,9 +55,9 @@ func unaryInterceptor(ctx context.Context, method string, req, reply interface{}
 		}
 	}
 	if !credsConfigured {
-		opts = append(opts, grpc.PerRPCCredentials(oauth.NewOauthAccess(&oauth2.Token{
-			AccessToken: fallbackToken,
-		})))
+		opts = append(opts, grpc.PerRPCCredentials(oauth.TokenSource{
+			TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: fallbackToken}),
+		}))
 	}
 	start := time.Now()
 	err := invoker(ctx, method, req, reply, cc, opts...)
@@ -72,12 +72,12 @@ type wrappedStream struct {
 	grpc.ClientStream
 }
 
-func (w *wrappedStream) RecvMsg(m interface{}) error {
+func (w *wrappedStream) RecvMsg(m any) error {
 	logger("Receive a message (Type: %T) at %v", m, time.Now().Format(time.RFC3339))
 	return w.ClientStream.RecvMsg(m)
 }
 
-func (w *wrappedStream) SendMsg(m interface{}) error {
+func (w *wrappedStream) SendMsg(m any) error {
 	logger("Send a message (Type: %T) at %v", m, time.Now().Format(time.RFC3339))
 	return w.ClientStream.SendMsg(m)
 }
@@ -97,9 +97,9 @@ func streamInterceptor(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.Clie
 		}
 	}
 	if !credsConfigured {
-		opts = append(opts, grpc.PerRPCCredentials(oauth.NewOauthAccess(&oauth2.Token{
-			AccessToken: fallbackToken,
-		})))
+		opts = append(opts, grpc.PerRPCCredentials(oauth.TokenSource{
+			TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: fallbackToken}),
+		}))
 	}
 	s, err := streamer(ctx, desc, cc, method, opts...)
 	if err != nil {
@@ -153,7 +153,7 @@ func main() {
 	}
 
 	// Set up a connection to the server.
-	conn, err := grpc.Dial(*addr, grpc.WithTransportCredentials(creds), grpc.WithUnaryInterceptor(unaryInterceptor), grpc.WithStreamInterceptor(streamInterceptor), grpc.WithBlock())
+	conn, err := grpc.NewClient(*addr, grpc.WithTransportCredentials(creds), grpc.WithUnaryInterceptor(unaryInterceptor), grpc.WithStreamInterceptor(streamInterceptor))
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}

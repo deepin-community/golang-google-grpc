@@ -1,2 +1,0 @@
-Use .proto files from grpc-proto (ITP: #965003) instead of vendoring
-them in debian/missing-sources and regenerate .pb.go files again.

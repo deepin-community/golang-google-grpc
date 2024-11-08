@@ -18,12 +18,12 @@
 
 // Package local implements local transport credentials.
 // Local credentials reports the security level based on the type
-// of connetion. If the connection is local TCP, NoSecurity will be
+// of connection. If the connection is local TCP, NoSecurity will be
 // reported, and if the connection is UDS, PrivacyAndIntegrity will be
 // reported. If local credentials is not used in local connections
 // (local TCP or UDS), it will fail.
 //
-// Experimental
+// # Experimental
 //
 // Notice: This package is EXPERIMENTAL and may be changed or removed in a
 // later release.
@@ -38,14 +38,14 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-// Info contains the auth information for a local connection.
+// info contains the auth information for a local connection.
 // It implements the AuthInfo interface.
-type Info struct {
+type info struct {
 	credentials.CommonAuthInfo
 }
 
-// AuthType returns the type of Info as a string.
-func (Info) AuthType() string {
+// AuthType returns the type of info as a string.
+func (info) AuthType() string {
 	return "local"
 }
 
@@ -65,12 +65,15 @@ func getSecurityLevel(network, addr string) (credentials.SecurityLevel, error) {
 	// Local TCP connection
 	case strings.HasPrefix(addr, "127."), strings.HasPrefix(addr, "[::1]:"):
 		return credentials.NoSecurity, nil
+	// Windows named pipe connection
+	case network == "pipe" && strings.HasPrefix(addr, `\\.\pipe\`):
+		return credentials.NoSecurity, nil
 	// UDS connection
 	case network == "unix":
 		return credentials.PrivacyAndIntegrity, nil
 	// Not a local connection and should fail
 	default:
-		return credentials.Invalid, fmt.Errorf("local credentials rejected connection to non-local address %q", addr)
+		return credentials.InvalidSecurityLevel, fmt.Errorf("local credentials rejected connection to non-local address %q", addr)
 	}
 }
 
@@ -79,7 +82,7 @@ func (*localTC) ClientHandshake(ctx context.Context, authority string, conn net.
 	if err != nil {
 		return nil, nil, err
 	}
-	return conn, Info{credentials.CommonAuthInfo{SecurityLevel: secLevel}}, nil
+	return conn, info{credentials.CommonAuthInfo{SecurityLevel: secLevel}}, nil
 }
 
 func (*localTC) ServerHandshake(conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
@@ -87,7 +90,7 @@ func (*localTC) ServerHandshake(conn net.Conn) (net.Conn, credentials.AuthInfo, 
 	if err != nil {
 		return nil, nil, err
 	}
-	return conn, Info{credentials.CommonAuthInfo{SecurityLevel: secLevel}}, nil
+	return conn, info{credentials.CommonAuthInfo{SecurityLevel: secLevel}}, nil
 }
 
 // NewCredentials returns a local credential implementing credentials.TransportCredentials.

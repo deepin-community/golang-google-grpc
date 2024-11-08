@@ -18,7 +18,6 @@
 package testutils
 
 import (
-	"fmt"
 	"net"
 	"strconv"
 
@@ -27,8 +26,8 @@ import (
 	v2endpointpb "github.com/envoyproxy/go-control-plane/envoy/api/v2/endpoint"
 	v3corepb "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	v2typepb "github.com/envoyproxy/go-control-plane/envoy/type"
-	wrapperspb "github.com/golang/protobuf/ptypes/wrappers"
 	"google.golang.org/grpc/xds/internal"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // EmptyNodeProtoV2 is a v2 Node proto with no fields set.
@@ -59,11 +58,11 @@ type ClusterLoadAssignmentBuilder struct {
 }
 
 // NewClusterLoadAssignmentBuilder creates a ClusterLoadAssignmentBuilder.
-func NewClusterLoadAssignmentBuilder(clusterName string, dropPercents []uint32) *ClusterLoadAssignmentBuilder {
-	var drops []*v2xdspb.ClusterLoadAssignment_Policy_DropOverload
-	for i, d := range dropPercents {
+func NewClusterLoadAssignmentBuilder(clusterName string, dropPercents map[string]uint32) *ClusterLoadAssignmentBuilder {
+	drops := make([]*v2xdspb.ClusterLoadAssignment_Policy_DropOverload, 0, len(dropPercents))
+	for n, d := range dropPercents {
 		drops = append(drops, &v2xdspb.ClusterLoadAssignment_Policy_DropOverload{
-			Category: fmt.Sprintf("test-drop-%d", i),
+			Category: n,
 			DropPercentage: &v2typepb.FractionalPercent{
 				Numerator:   d,
 				Denominator: v2typepb.FractionalPercent_HUNDRED,
@@ -89,7 +88,7 @@ type AddLocalityOptions struct {
 
 // AddLocality adds a locality to the builder.
 func (clab *ClusterLoadAssignmentBuilder) AddLocality(subzone string, weight uint32, priority uint32, addrsWithPort []string, opts *AddLocalityOptions) {
-	var lbEndPoints []*v2endpointpb.LbEndpoint
+	lbEndPoints := make([]*v2endpointpb.LbEndpoint, 0, len(addrsWithPort))
 	for i, a := range addrsWithPort {
 		host, portStr, err := net.SplitHostPort(a)
 		if err != nil {

@@ -30,10 +30,10 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/benchmark"
-	testpb "google.golang.org/grpc/benchmark/grpc_testing"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/internal/syscall"
+	testpb "google.golang.org/grpc/interop/grpc_testing"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/testdata"
 )
@@ -80,7 +80,10 @@ func startBenchmarkServer(config *testpb.ServerConfig, serverPort int) (*benchma
 	}
 	runtime.GOMAXPROCS(numOfCores)
 
-	var opts []grpc.ServerOption
+	opts := []grpc.ServerOption{
+		grpc.WriteBufferSize(128 * 1024),
+		grpc.ReadBufferSize(128 * 1024),
+	}
 
 	// Sanity check for server type.
 	switch config.ServerType {
@@ -101,7 +104,7 @@ func startBenchmarkServer(config *testpb.ServerConfig, serverPort int) (*benchma
 		}
 		creds, err := credentials.NewServerTLSFromFile(*certFile, *keyFile)
 		if err != nil {
-			logger.Fatalf("failed to generate credentials %v", err)
+			logger.Fatalf("failed to generate credentials: %v", err)
 		}
 		opts = append(opts, grpc.Creds(creds))
 	}

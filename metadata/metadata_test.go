@@ -22,10 +22,14 @@ import (
 	"context"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/internal/grpctest"
 )
+
+const defaultTestTimeout = 10 * time.Second
 
 type s struct {
 	grpctest.Tester
@@ -166,9 +170,116 @@ func (s) TestAppend(t *testing.T) {
 	}
 }
 
+func (s) TestDelete(t *testing.T) {
+	for _, test := range []struct {
+		md        MD
+		deleteKey string
+		want      MD
+	}{
+		{
+			md:        Pairs("My-Optional-Header", "42"),
+			deleteKey: "My-Optional-Header",
+			want:      Pairs(),
+		},
+		{
+			md:        Pairs("My-Optional-Header", "42"),
+			deleteKey: "Other-Key",
+			want:      Pairs("my-optional-header", "42"),
+		},
+		{
+			md:        Pairs("My-Optional-Header", "42"),
+			deleteKey: "my-OptIoNal-HeAder",
+			want:      Pairs(),
+		},
+	} {
+		test.md.Delete(test.deleteKey)
+		if !reflect.DeepEqual(test.md, test.want) {
+			t.Errorf("value of metadata is %v, want %v", test.md, test.want)
+		}
+	}
+}
+
+func (s) TestFromIncomingContext(t *testing.T) {
+	md := Pairs(
+		"X-My-Header-1", "42",
+	)
+	// Verify that we lowercase if callers directly modify md
+	md["X-INCORRECT-UPPERCASE"] = []string{"foo"}
+	ctx := NewIncomingContext(context.Background(), md)
+
+	result, found := FromIncomingContext(ctx)
+	if !found {
+		t.Fatal("FromIncomingContext must return metadata")
+	}
+	expected := MD{
+		"x-my-header-1":         []string{"42"},
+		"x-incorrect-uppercase": []string{"foo"},
+	}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("FromIncomingContext returned %#v, expected %#v", result, expected)
+	}
+
+	// ensure modifying result does not modify the value in the context
+	result["new_key"] = []string{"foo"}
+	result["x-my-header-1"][0] = "mutated"
+
+	result2, found := FromIncomingContext(ctx)
+	if !found {
+		t.Fatal("FromIncomingContext must return metadata")
+	}
+	if !reflect.DeepEqual(result2, expected) {
+		t.Errorf("FromIncomingContext after modifications returned %#v, expected %#v", result2, expected)
+	}
+}
+
+func (s) TestValueFromIncomingContext(t *testing.T) {
+	md := Pairs(
+		"X-My-Header-1", "42",
+		"X-My-Header-2", "43-1",
+		"X-My-Header-2", "43-2",
+		"x-my-header-3", "44",
+	)
+	// Verify that we lowercase if callers directly modify md
+	md["X-INCORRECT-UPPERCASE"] = []string{"foo"}
+	ctx := NewIncomingContext(context.Background(), md)
+
+	for _, test := range []struct {
+		key  string
+		want []string
+	}{
+		{
+			key:  "x-my-header-1",
+			want: []string{"42"},
+		},
+		{
+			key:  "x-my-header-2",
+			want: []string{"43-1", "43-2"},
+		},
+		{
+			key:  "x-my-header-3",
+			want: []string{"44"},
+		},
+		{
+			key:  "x-unknown",
+			want: nil,
+		},
+		{
+			key:  "x-incorrect-uppercase",
+			want: []string{"foo"},
+		},
+	} {
+		v := ValueFromIncomingContext(ctx, test.key)
+		if !reflect.DeepEqual(v, test.want) {
+			t.Errorf("value of metadata is %v, want %v", v, test.want)
+		}
+	}
+}
+
 func (s) TestAppendToOutgoingContext(t *testing.T) {
 	// Pre-existing metadata
-	ctx := NewOutgoingContext(context.Background(), Pairs("k1", "v1", "k2", "v2"))
+	tCtx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+	ctx := NewOutgoingContext(tCtx, Pairs("k1", "v1", "k2", "v2"))
 	ctx = AppendToOutgoingContext(ctx, "k1", "v3")
 	ctx = AppendToOutgoingContext(ctx, "k1", "v4")
 	md, ok := FromOutgoingContext(ctx)
@@ -181,7 +292,7 @@ func (s) TestAppendToOutgoingContext(t *testing.T) {
 	}
 
 	// No existing metadata
-	ctx = AppendToOutgoingContext(context.Background(), "k1", "v1")
+	ctx = AppendToOutgoingContext(tCtx, "k1", "v1")
 	md, ok = FromOutgoingContext(ctx)
 	if !ok {
 		t.Errorf("Expected MD to exist in ctx, but got none")
@@ -193,7 +304,8 @@ func (s) TestAppendToOutgoingContext(t *testing.T) {
 }
 
 func (s) TestAppendToOutgoingContext_Repeated(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
 
 	for i := 0; i < 100; i = i + 2 {
 		ctx1 := AppendToOutgoingContext(ctx, "k", strconv.Itoa(i))
@@ -213,7 +325,9 @@ func (s) TestAppendToOutgoingContext_Repeated(t *testing.T) {
 func (s) TestAppendToOutgoingContext_FromKVSlice(t *testing.T) {
 	const k, v = "a", "b"
 	kv := []string{k, v}
-	ctx := AppendToOutgoingContext(context.Background(), kv...)
+	tCtx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+	ctx := AppendToOutgoingContext(tCtx, kv...)
 	md, _ := FromOutgoingContext(ctx)
 	if md[k][0] != v {
 		t.Fatalf("md[%q] = %q; want %q", k, md[k], v)
@@ -225,12 +339,33 @@ func (s) TestAppendToOutgoingContext_FromKVSlice(t *testing.T) {
 	}
 }
 
+func TestStringerMD(t *testing.T) {
+	for _, test := range []struct {
+		md   MD
+		want []string
+	}{
+		{MD{}, []string{"MD{}"}},
+		{MD{"k1": []string{}}, []string{"MD{k1=[]}"}},
+		{MD{"k1": []string{"v1", "v2"}}, []string{"MD{k1=[v1, v2]}"}},
+		{MD{"k1": []string{"v1"}}, []string{"MD{k1=[v1]}"}},
+		{MD{"k1": []string{"v1", "v2"}, "k2": []string{}, "k3": []string{"1", "2", "3"}}, []string{"MD{", "k1=[v1, v2]", "k2=[]", "k3=[1, 2, 3]", "}"}},
+	} {
+		got := test.md.String()
+		for _, want := range test.want {
+			if !strings.Contains(got, want) {
+				t.Fatalf("Metadata string %q is missing %q", got, want)
+			}
+		}
+	}
+}
+
 // Old/slow approach to adding metadata to context
 func Benchmark_AddingMetadata_ContextManipulationApproach(b *testing.B) {
 	// TODO: Add in N=1-100 tests once Go1.6 support is removed.
 	const num = 10
 	for n := 0; n < b.N; n++ {
-		ctx := context.Background()
+		ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+		defer cancel()
 		for i := 0; i < num; i++ {
 			md, _ := FromOutgoingContext(ctx)
 			NewOutgoingContext(ctx, Join(Pairs("k1", "v1", "k2", "v2"), md))
@@ -241,8 +376,9 @@ func Benchmark_AddingMetadata_ContextManipulationApproach(b *testing.B) {
 // Newer/faster approach to adding metadata to context
 func BenchmarkAppendToOutgoingContext(b *testing.B) {
 	const num = 10
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
 	for n := 0; n < b.N; n++ {
-		ctx := context.Background()
 		for i := 0; i < num; i++ {
 			ctx = AppendToOutgoingContext(ctx, "k1", "v1", "k2", "v2")
 		}
@@ -250,11 +386,44 @@ func BenchmarkAppendToOutgoingContext(b *testing.B) {
 }
 
 func BenchmarkFromOutgoingContext(b *testing.B) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
 	ctx = NewOutgoingContext(ctx, MD{"k3": {"v3", "v4"}})
 	ctx = AppendToOutgoingContext(ctx, "k1", "v1", "k2", "v2")
 
 	for n := 0; n < b.N; n++ {
 		FromOutgoingContext(ctx)
 	}
+}
+
+func BenchmarkFromIncomingContext(b *testing.B) {
+	md := Pairs("X-My-Header-1", "42")
+	ctx := NewIncomingContext(context.Background(), md)
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		FromIncomingContext(ctx)
+	}
+}
+
+func BenchmarkValueFromIncomingContext(b *testing.B) {
+	md := Pairs("X-My-Header-1", "42")
+	ctx := NewIncomingContext(context.Background(), md)
+
+	b.Run("key-found", func(b *testing.B) {
+		for n := 0; n < b.N; n++ {
+			result := ValueFromIncomingContext(ctx, "x-my-header-1")
+			if len(result) != 1 {
+				b.Fatal("ensures not optimized away")
+			}
+		}
+	})
+
+	b.Run("key-not-found", func(b *testing.B) {
+		for n := 0; n < b.N; n++ {
+			result := ValueFromIncomingContext(ctx, "key-not-found")
+			if len(result) != 0 {
+				b.Fatal("ensures not optimized away")
+			}
+		}
+	})
 }

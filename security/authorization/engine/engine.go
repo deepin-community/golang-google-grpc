@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+// Package engine provides a CEL-based authorization engine for gRPC.
 package engine
 
 import (
@@ -28,7 +29,6 @@ import (
 	"github.com/google/cel-go/interpreter"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/grpc/grpclog"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/protobuf/proto"
 )
@@ -53,12 +53,12 @@ var intAttributeMap = map[string]func(*AuthorizationArgs) (int, error){
 // activationImpl is an implementation of interpreter.Activation.
 // An Activation is the primary mechanism by which a caller supplies input into a CEL program.
 type activationImpl struct {
-	dict map[string]interface{}
+	dict map[string]any
 }
 
 // ResolveName returns a value from the activation by qualified name, or false if the name
 // could not be found.
-func (activation activationImpl) ResolveName(name string) (interface{}, bool) {
+func (activation activationImpl) ResolveName(name string) (any, bool) {
 	result, ok := activation.dict[name]
 	return result, ok
 }
@@ -71,7 +71,6 @@ func (activation activationImpl) Parent() interpreter.Activation {
 
 // AuthorizationArgs is the input of the CEL-based authorization engine.
 type AuthorizationArgs struct {
-	md         metadata.MD
 	peerInfo   *peer.Peer
 	fullMethod string
 }
@@ -79,7 +78,7 @@ type AuthorizationArgs struct {
 // newActivation converts AuthorizationArgs into the activation for CEL.
 func newActivation(args *AuthorizationArgs) interpreter.Activation {
 	// Fill out evaluation map, only adding the attributes that can be extracted.
-	evalMap := make(map[string]interface{})
+	evalMap := make(map[string]any)
 	for key, function := range stringAttributeMap {
 		val, err := function(args)
 		if err == nil {
@@ -211,7 +210,7 @@ func exprToProgram(condition *expr.Expr, env *cel.Env) (cel.Program, error) {
 		return nil, iss.Err()
 	}
 	// Check that the expression will evaluate to a boolean.
-	if !proto.Equal(ast.ResultType(), decls.Bool) {
+	if ot, _ := cel.TypeToExprType(ast.OutputType()); !proto.Equal(ot, decls.Bool) {
 		return nil, fmt.Errorf("expected boolean condition")
 	}
 	// Build the program plan.
@@ -253,13 +252,16 @@ func getDecision(engine *policyEngine, match bool) Decision {
 	return DecisionDeny
 }
 
-// Returns the authorization decision of a single policy engine based on activation.
-// If any policy matches, the decision matches the engine's action, and the first
-//  matching policy name will be returned.
-// Else if any policy is missing attributes, the decision is unknown, and the list of
-//  policy names that can't be evaluated due to missing attributes will be returned.
-// Else, the decision is the opposite of the engine's action, i.e. an ALLOW engine
-//  will return DecisionDeny, and vice versa.
+// Returns the authorization decision of a single policy engine based on
+// activation.  If any policy matches, the decision matches the engine's
+// action, and the first matching policy name will be returned.
+//
+// Else if any policy is missing attributes, the decision is unknown, and the
+// list of policy names that can't be evaluated due to missing attributes will
+// be returned.
+//
+// Else, the decision is the opposite of the engine's action, i.e. an ALLOW
+// engine will return DecisionDeny, and vice versa.
 func (engine *policyEngine) evaluate(activation interpreter.Activation) (Decision, []string) {
 	unknownPolicyNames := []string{}
 	for policyName, program := range engine.programs {

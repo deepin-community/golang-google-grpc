@@ -17,20 +17,28 @@
  */
 
 // Binary server is an interop server.
+//
+// See interop test case descriptions [here].
+//
+// [here]: https://github.com/grpc/grpc/blob/master/doc/interop-test-descriptions.md
 package main
 
 import (
 	"flag"
 	"net"
 	"strconv"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/alts"
 	"google.golang.org/grpc/grpclog"
+	"google.golang.org/grpc/internal"
 	"google.golang.org/grpc/interop"
-	testpb "google.golang.org/grpc/interop/grpc_testing"
+	"google.golang.org/grpc/orca"
 	"google.golang.org/grpc/testdata"
+
+	testgrpc "google.golang.org/grpc/interop/grpc_testing"
 )
 
 var (
@@ -47,14 +55,15 @@ var (
 func main() {
 	flag.Parse()
 	if *useTLS && *useALTS {
-		logger.Fatalf("use_tls and use_alts cannot be both set to true")
+		logger.Fatal("-use_tls and -use_alts cannot be both set to true")
 	}
 	p := strconv.Itoa(*port)
 	lis, err := net.Listen("tcp", ":"+p)
 	if err != nil {
 		logger.Fatalf("failed to listen: %v", err)
 	}
-	var opts []grpc.ServerOption
+	logger.Infof("interop server listening on %v", lis.Addr())
+	opts := []grpc.ServerOption{orca.CallMetricsServerOption(nil)}
 	if *useTLS {
 		if *certFile == "" {
 			*certFile = testdata.Path("server1.pem")
@@ -64,7 +73,7 @@ func main() {
 		}
 		creds, err := credentials.NewServerTLSFromFile(*certFile, *keyFile)
 		if err != nil {
-			logger.Fatalf("Failed to generate credentials %v", err)
+			logger.Fatalf("Failed to generate credentials: %v", err)
 		}
 		opts = append(opts, grpc.Creds(creds))
 	} else if *useALTS {
@@ -76,6 +85,13 @@ func main() {
 		opts = append(opts, grpc.Creds(altsTC))
 	}
 	server := grpc.NewServer(opts...)
-	testpb.RegisterTestServiceServer(server, interop.NewTestServer())
+	metricsRecorder := orca.NewServerMetricsRecorder()
+	sopts := orca.ServiceOptions{
+		MinReportingInterval:  time.Second,
+		ServerMetricsProvider: metricsRecorder,
+	}
+	internal.ORCAAllowAnyMinReportingInterval.(func(*orca.ServiceOptions))(&sopts)
+	orca.Register(server, sopts)
+	testgrpc.RegisterTestServiceServer(server, interop.NewTestServer(interop.NewTestServerOptions{MetricsRecorder: metricsRecorder}))
 	server.Serve(lis)
 }

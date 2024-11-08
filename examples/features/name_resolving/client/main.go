@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	ecpb "google.golang.org/grpc/examples/features/proto/echo"
 	"google.golang.org/grpc/resolver"
 )
@@ -55,10 +56,9 @@ func makeRPCs(cc *grpc.ClientConn, n int) {
 }
 
 func main() {
-	passthroughConn, err := grpc.Dial(
+	passthroughConn, err := grpc.NewClient(
 		fmt.Sprintf("passthrough:///%s", backendAddr), // Dial to "passthrough:///localhost:50051"
-		grpc.WithInsecure(),
-		grpc.WithBlock(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
@@ -70,10 +70,9 @@ func main() {
 
 	fmt.Println()
 
-	exampleConn, err := grpc.Dial(
+	exampleConn, err := grpc.NewClient(
 		fmt.Sprintf("%s:///%s", exampleScheme, exampleServiceName), // Dial to "example:///resolver.example.grpc.io"
-		grpc.WithInsecure(),
-		grpc.WithBlock(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
@@ -120,7 +119,7 @@ type exampleResolver struct {
 }
 
 func (r *exampleResolver) start() {
-	addrStrs := r.addrsStore[r.target.Endpoint]
+	addrStrs := r.addrsStore[r.target.Endpoint()]
 	addrs := make([]resolver.Address, len(addrStrs))
 	for i, s := range addrStrs {
 		addrs[i] = resolver.Address{Addr: s}

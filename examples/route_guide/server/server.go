@@ -28,19 +28,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math"
 	"net"
+	"os"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
-
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/examples/data"
-
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
 
 	pb "google.golang.org/grpc/examples/route_guide/routeguide"
 )
@@ -50,7 +48,7 @@ var (
 	certFile   = flag.String("cert_file", "", "The TLS cert file")
 	keyFile    = flag.String("key_file", "", "The TLS key file")
 	jsonDBFile = flag.String("json_db_file", "", "A json file containing a list of features")
-	port       = flag.Int("port", 10000, "The server port")
+	port       = flag.Int("port", 50051, "The server port")
 )
 
 type routeGuideServer struct {
@@ -155,7 +153,7 @@ func (s *routeGuideServer) loadFeatures(filePath string) {
 	var data []byte
 	if filePath != "" {
 		var err error
-		data, err = ioutil.ReadFile(filePath)
+		data, err = os.ReadFile(filePath)
 		if err != nil {
 			log.Fatalf("Failed to load default features: %v", err)
 		}
@@ -233,7 +231,7 @@ func main() {
 		}
 		creds, err := credentials.NewServerTLSFromFile(*certFile, *keyFile)
 		if err != nil {
-			log.Fatalf("Failed to generate credentials %v", err)
+			log.Fatalf("Failed to generate credentials: %v", err)
 		}
 		opts = []grpc.ServerOption{grpc.Creds(creds)}
 	}
