@@ -1,3 +1,14 @@
+golang-google-grpc (1.64.0-6deepin1) unstable; urgency=medium
+
+  * Fix CVE-2026-33186: Authorization bypass via malformed :path header
+    .  gRPC-Go server was too lenient in its routing logic, accepting
+    requests  where the :path omitted the mandatory leading slash. This
+    could allow  requests to bypass path-based authorization
+    interceptors.  .  This patch adds strict path checking to reject
+    requests with non-canonical  paths (missing the leading slash).
+
+ -- deepin-ci-robot <packages@deepin.org>  Thu, 16 Apr 2026 23:18:41 +0800
+
 golang-google-grpc (1.64.0-6) unstable; urgency=medium
 
   * Team upload
